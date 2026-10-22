@@ -1,0 +1,105 @@
+/* Popup source with analysis metadata bridge and real extension list persistence. */
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+let browser;
+let checks = 0;
+const check = (value, label) => { assert.ok(value, label); checks++; console.log(`PASS ${label}`); };
+(async () => {
+  const chromePath = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
+  browser = await chromium.launchPersistentContext('', { executablePath: process.env.CHROME_PATH || (fs.existsSync(chromePath) ? chromePath : undefined), headless: true, viewport: { width: 800, height: 660 }, args: ['--enable-unsafe-extension-debugging'], ignoreDefaultArgs: ['--disable-extensions'] });
+  const cdp = await browser.browser().newBrowserCDPSession();
+  const { id } = await cdp.send('Extensions.loadUnpacked', { path: path.resolve(__dirname, '..') });
+  const popup = await browser.newPage();
+  const errors = [];
+  popup.on('pageerror', error => errors.push(error.message));
+  await popup.goto(`chrome-extension://${id}/popup.html`);
+  const rpc = async (action, payload = {}) => {
+    const response = await popup.evaluate(message => chrome.runtime.sendMessage(message), { type: 'seoLists', action, ...payload });
+    assert.ok(response.ok, response.error); return response.state;
+  };
+  await popup.evaluate(() => {
+    chrome.tabs.query = async () => [{ id: 42, url: globalThis.__linksFixture.url, title: globalThis.__linksFixture.title }];
+    chrome.scripting.executeScript = async options => options.files ? [] : [{ result: JSON.parse(JSON.stringify(globalThis.__linksFixture)) }];
+  });
+  let caseNumber = 0;
+  const link = (domain, rel = '', restricted = false) => ({ url: `https://${domain}/destination`, domain, text: 'Target', rel, restricted });
+  const prepare = async (links, { pageNofollow = false, refresh = true } = {}) => {
+    const data = { url: `https://source.example/page-${++caseNumber}`, hostname: 'source.example', title: `Source title ${caseNumber}`, description: '', canonical: '', robots: '', lang: 'ru', openGraph: [], headings: [], images: [], wordCount: 1, links, pageNofollow, micro: { jsonLd: [], microdata: [], rdfa: [] } };
+    await popup.evaluate(data => { globalThis.__linksFixture = data; }, data);
+    if (refresh) {
+      await popup.locator('#refresh').click();
+      await popup.waitForFunction(url => document.querySelector('#page').textContent === url, data.url);
+    }
+    return data;
+  };
+  const clickAndRead = async (listId, { double = false } = {}) => {
+    const before = (await rpc('get')).data.lists.find(x => x.id === listId).items.length;
+    if (double) await popup.evaluate(() => { document.querySelector('#save-links-page').click(); document.querySelector('#save-links-page').click(); });
+    else await popup.locator('#save-links-page').click();
+    await popup.waitForFunction(async ({ listId, before }) => {
+      const response = await chrome.runtime.sendMessage({ type: 'seoLists', action: 'get' });
+      return response.state.data.lists.find(x => x.id === listId).items.length > before;
+    }, { listId, before });
+    const items = (await rpc('get')).data.lists.find(x => x.id === listId).items;
+    assert.equal(items.length, before + 1, 'only one save per click');
+    return items.at(-1);
+  };
+  await prepare([link('target.test', 'nofollow noopener', true), link('other.test')]);
+  await popup.locator('[data-tab="links"]').click();
+  await popup.locator('#links-domain').fill('target.test');
+  check(await popup.locator('#save-links-page').isDisabled(), 'no current list disables LINKS quick save');
+  check((await popup.locator('#links-current-list').textContent()).includes('LISTS'), 'small empty-list hint directs to LISTS');
+  let state = await rpc('createList', { name: 'Текущий список для найденных доноров с очень длинным названием' });
+  const listA = state.selectedListId;
+  await popup.waitForFunction(() => !document.querySelector('#save-links-page').disabled);
+  check((await popup.locator('#links-current-list').textContent()).includes('Текущий список'), 'compact current list label follows worker selection');
+  await popup.locator('[data-tab="lists"]').click();
+  await popup.locator('#list-comment').fill('Несохранённый комментарий');
+  await popup.locator('#list-tags').fill('Ручной тег');
+  await popup.locator('[data-tab="links"]').click();
+  let item = await clickAndRead(listA, { double: true });
+  check(item.url.startsWith('https://source.example/') && !item.url.includes('target.test'), 'quick save stores source page rather than destination link');
+  check(JSON.stringify([...item.tags].sort()) === JSON.stringify(['nofollow', 'noopener']), 'domain-filtered nofollow noopener tags exclude unrelated follow link');
+  check(item.comment === '' && await popup.locator('#list-comment').inputValue() === 'Несохранённый комментарий' && await popup.locator('#list-tags').inputValue() === 'Ручной тег', 'quick save leaves manual LISTS drafts intact');
+  check(await popup.locator('#links').isVisible(), 'quick save remains in LINKS without expanding forms');
+  await prepare([link('target.test')]);
+  item = await clickAndRead(listA);
+  check(JSON.stringify(item.tags) === JSON.stringify(['follow']), 'unqualified matching link adds follow');
+  await prepare([link('target.test', 'noopener')]);
+  item = await clickAndRead(listA);
+  check(item.tags.includes('follow') && item.tags.includes('noopener'), 'noopener remains separate and does not suppress follow');
+  await prepare([link('target.test', 'NOFOLLOW,NOOPENER', true), link('target.test'), link('target.test', 'sponsored noreferrer', true)]);
+  item = await clickAndRead(listA);
+  check(JSON.stringify([...item.tags].sort()) === JSON.stringify(['follow', 'nofollow', 'noopener', 'noreferrer', 'sponsored']), 'mixed matching links union normalized rel and follow tags');
+  await prepare([link('target.test', '', true)], { pageNofollow: true });
+  item = await clickAndRead(listA);
+  check(item.tags.includes('nofollow') && !item.tags.includes('follow'), 'page-wide nofollow prevents false follow tagging');
+  await popup.locator('#links-domain').fill('missing.test');
+  check(await popup.locator('#save-links-page').isDisabled(), 'zero matching links disables save without inventing follow');
+  await popup.locator('#links-domain').fill('target.test');
+  state = await rpc('createList', { name: 'Другой текущий список' });
+  const listB = state.selectedListId;
+  await popup.waitForFunction(() => document.querySelector('#links-current-list').textContent.includes('Другой текущий список'));
+  await prepare([link('target.test', 'noopener')]);
+  const fresh = await prepare([link('target.test', 'nofollow', true)], { refresh: false });
+  item = await clickAndRead(listB);
+  check(item.url === fresh.url && item.title === fresh.title && item.tags.includes('nofollow') && !item.tags.includes('follow'), 'click refreshes current page data and saves to newly selected list');
+  state = await rpc('get');
+  check(state.data.lists.find(x => x.id === listB).tags.includes('nofollow'), 'automatic tags become reusable list catalogue entries');
+  await prepare([link('target.test')]);
+  await prepare([], { refresh: false });
+  const beforeEmpty = JSON.stringify((await rpc('get')).data);
+  await popup.locator('#save-links-page').click();
+  await popup.waitForFunction(() => document.querySelector('#save-links-page').disabled);
+  check(JSON.stringify((await rpc('get')).data) === beforeEmpty, 'links removed before click cause no stale-page save');
+  await prepare([link('target.test')]);
+  const buttonBox = await popup.locator('#save-links-page').boundingBox();
+  const labelBox = await popup.locator('#links-current-list').boundingBox();
+  check(buttonBox && labelBox && Math.abs(buttonBox.y - labelBox.y) < 12, 'current list and save stay compact on one row');
+  fs.mkdirSync(path.join(__dirname, 'artifacts'), { recursive: true });
+  await popup.screenshot({ path: path.join(__dirname, 'artifacts', 'links-quick-save.png') });
+  check(errors.length === 0, 'quick save has no uncaught JavaScript exceptions');
+  console.log(`PASS ${checks} LINKS quick-save integration checks`);
+})().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => { await browser?.close(); });
