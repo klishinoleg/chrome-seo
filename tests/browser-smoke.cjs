@@ -1,0 +1,135 @@
+/* npm install, then npm test. PLAYWRIGHT_MODULE and CHROME_PATH override local tooling. */
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const http = require('node:http');
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const root = path.resolve(__dirname, '..');
+const artifacts = path.join(__dirname, 'artifacts');
+const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css', '.png': 'image/png' };
+const server = http.createServer((req, res) => {
+  const file = path.resolve(root, `.${new URL(req.url, 'http://local').pathname}`);
+  if (!file.startsWith(root + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404).end(); return; }
+  res.setHeader('Content-Type', mime[path.extname(file)] || 'text/plain');
+  res.end(fs.readFileSync(file));
+});
+let browser;
+let checks = 0;
+const check = (condition, description) => { assert.ok(condition, description); checks++; console.log(`PASS ${description}`); };
+(async () => {
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const installedChrome = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
+  const executablePath = process.env.CHROME_PATH || (process.platform === 'win32' && fs.existsSync(installedChrome) ? installedChrome : undefined);
+  browser = await chromium.launchPersistentContext('', { executablePath, headless: true, viewport: { width: 800, height: 660 }, args: ['--enable-unsafe-extension-debugging'], ignoreDefaultArgs: ['--disable-extensions'] });
+  const cdp = await browser.browser().newBrowserCDPSession();
+  const { id: extensionId } = await cdp.send('Extensions.loadUnpacked', { path: root });
+  check(Boolean(extensionId), 'unmodified Manifest V3 extension loaded in real Chrome');
+  const context = browser;
+  const fixture = await context.newPage();
+  const errors = [];
+  fixture.on('pageerror', error => errors.push(error.message));
+  await fixture.goto(`${base}/tests/fixture.html`);
+  await fixture.waitForFunction(() => document.querySelector('#results')?.textContent.startsWith('PASS:'));
+  check(/^PASS: 1[2-9]/.test(await fixture.locator('#results').textContent()), '12 browser engine regressions');
+  check(errors.length === 0, 'fixture has no JS exceptions');
+  await fixture.evaluate(() => document.querySelector('#results').remove());
+  const extra = await fixture.evaluate(() => {
+    const anchor = document.createElement('a'); anchor.href = 'https://comma.test'; anchor.rel = 'ugc,nofollow'; anchor.textContent = 'Comma'; document.body.append(anchor);
+    const p = document.createElement('p'); p.innerHTML = 'alpha<br>beta'; document.body.append(p);
+    const result = { restricted: __chromeSeo.analyze().links.find(x => x.domain === 'comma.test').restricted, words: __chromeSeo.keywords('alpha beta').words.map(x => x.body), colors: __chromeSeo.keywords('a b c d e f g h').words.map(x => x.color) };
+    p.remove(); anchor.remove(); return result;
+  });
+  check(extra.restricted, 'comma-separated rel is restricted');
+  check(extra.words.every(n => n === 1), 'BR separates visible words');
+  check(new Set(extra.colors).size === 8, 'eight input words have distinct colors');
+  const saved = {};
+  const opened = [];
+  const actualPopup = await context.newPage();
+  await actualPopup.goto(`chrome-extension://${extensionId}/popup.html`);
+  await actualPopup.waitForFunction(() => document.querySelector('#status').textContent.includes('Не удалось'));
+  check((await actualPopup.locator('#status').textContent()).includes('HTTP(S)'), 'real extension gracefully reports unsupported active tab');
+  await actualPopup.evaluate(() => chrome.storage.local.set({ searchTargetDomain: 'outside.test' }));
+  const actualSerp = await context.newPage();
+  await actualSerp.route('https://www.google.com/**', route => route.fulfill({ contentType: 'text/html', body: '<html><body><a href="https://outside.test/a">Target domain</a><a href="https://outside.test.evil">Deceptive domain</a></body></html>' }));
+  await actualSerp.goto('https://www.google.com/search?q=local-fixture');
+  await actualSerp.waitForSelector('[data-seo-lens-result]');
+  check(await actualSerp.locator('[data-seo-lens-result]').count() === 1, 'real manifest content script and storage highlight search domain');
+  await actualPopup.close();
+  await actualSerp.close();
+  const popup = await context.newPage();
+  await popup.exposeFunction('__storageGet', () => saved);
+  await popup.exposeFunction('__storageSet', data => Object.assign(saved, data));
+  await popup.exposeFunction('__openTab', data => { opened.push(data.url); return { id: 2 }; });
+  await popup.exposeFunction('__invokeBackend', (method, input) => fixture.evaluate(({ method, input }) => globalThis.__chromeSeo[method](input), { method, input }));
+  await popup.addInitScript(({ fixtureUrl }) => {
+    globalThis.chrome = {
+      tabs: { query: async () => [{ id: 1, url: fixtureUrl }], create: data => __openTab(data) },
+      storage: { local: { get: () => __storageGet(), set: data => __storageSet(data) } },
+      scripting: { executeScript: async options => options.files ? [] : [{ result: await __invokeBackend(...options.args) }] }
+    };
+  }, { fixtureUrl: fixture.url() });
+  popup.on('pageerror', error => errors.push(error.message));
+  await popup.goto(`${base}/popup.html`);
+  await popup.locator('#meta h1').waitFor();
+  check(await popup.locator('[data-tab]').count() === 5, 'five functional inspector tabs');
+  check((await popup.locator('#meta').textContent()).includes('Кот café A+B'), 'META rendered live fixture data');
+  fs.mkdirSync(artifacts, { recursive: true });
+  await popup.screenshot({ path: path.join(artifacts, 'meta.png') });
+  await popup.locator('[data-tab="keys"]').click();
+  await popup.locator('#keywords').fill('кот café A+B');
+  await popup.locator('#count').click();
+  await popup.locator('#key-results tbody tr').first().waitFor();
+  check(await popup.locator('#key-results tbody tr').count() === 3, 'KEYS renders independent literal terms');
+  await popup.locator('#highlight-keys').click();
+  await popup.waitForFunction(() => document.querySelector('#status').textContent.includes('совпадений'));
+  check(await fixture.evaluate(() => CSS.highlights.size > 0), 'KEYS creates browser highlights');
+  await popup.locator('#keys .clear').click();
+  await popup.waitForFunction(() => document.querySelector('#status').textContent.includes('очищена'));
+  check(await fixture.evaluate(() => CSS.highlights.size === 0), 'clear removes owned highlights');
+  await popup.locator('[data-tab="micro"]').click();
+  check((await popup.locator('#micro').textContent()).includes('Ошибка JSON'), 'MICRO displays invalid JSON-LD');
+  check(await popup.locator('#micro img').count() === 0, 'page strings safely rendered without HTML injection');
+  await popup.locator('[data-tab="links"]').click();
+  await popup.locator('#links-domain').fill('outside.test');
+  await popup.waitForFunction(() => document.querySelector('#link-results tbody').children.length === 2);
+  check(await popup.locator('#link-results .bad').count() === 2, 'LINKS domain filtering and restricted styling');
+  await popup.locator('#highlight-links').click();
+  await popup.waitForFunction(() => document.querySelector('#status').textContent.includes('совпадений'));
+  check(await fixture.evaluate(() => CSS.highlights.has('chrome-seo-link-restricted')), 'external links highlighted on source page');
+  await popup.screenshot({ path: path.join(artifacts, 'links.png') });
+  await popup.locator('[data-tab="search"]').click();
+  await popup.locator('#search-domain').fill('outside.test');
+  await popup.locator('#search-query').fill('кот café');
+  await popup.locator('#google').click();
+  await popup.waitForFunction(() => document.querySelector('#status').textContent.includes('Поиск открыт'));
+  check(new URL(opened.at(-1)).searchParams.get('q') === 'кот café', 'Google ordinary query URL');
+  await popup.locator('#yandex-site').click();
+  await popup.waitForFunction(() => document.querySelector('#status').textContent.includes('Поиск открыт'));
+  check(new URL(opened.at(-1)).searchParams.get('text') === 'site:outside.test кот café', 'Yandex site query URL');
+  await popup.reload();
+  await popup.locator('#meta h1').waitFor();
+  check(await popup.locator('#links-domain').inputValue() === 'outside.test' && await popup.locator('#search-domain').inputValue() === 'outside.test', 'LINKS and SEARCH domains survive reload');
+  check(await popup.locator('#search-query').inputValue() === 'кот café', 'search query survives reload');
+  // Isolate the synthetic storage harness from the manifest's real content script.
+  const mockContext = await browser.browser().newContext();
+  const serp = await mockContext.newPage();
+  await serp.route('https://www.google.com/**', route => route.fulfill({ contentType: 'text/html', body: '<html><body><a href="https://outside.test/a">Match</a><a href="https://sub.outside.test/b">Subdomain</a><a href="https://outside.test.evil/a">Wrong host</a><a href="https://www.google.com/url?q=https%3A%2F%2Foutside.test%2Fredirect">Redirect</a><a href="https://other.test">Other</a></body></html>' }));
+  await serp.addInitScript(() => {
+    window.chrome = { storage: { local: { get: async () => ({ searchTargetDomain: 'outside.test' }) }, onChanged: { addListener: callback => { window.__changeStorage = callback; } } } };
+  });
+  await serp.goto('https://www.google.com/search?q=test');
+  await serp.addScriptTag({ path: path.join(root, 'serp.js') });
+  await serp.waitForFunction(() => document.querySelectorAll('[data-seo-lens-result]').length === 3);
+  check(await serp.locator('a[data-seo-lens-result]').count() === 3, 'SERP exact/subdomain/redirect matching excludes deceptive hosts');
+  await serp.evaluate(() => { const a = document.createElement('a'); a.href = 'https://outside.test/dynamic'; a.textContent = 'Dynamic'; document.body.append(a); });
+  await serp.waitForFunction(() => document.querySelectorAll('[data-seo-lens-result]').length === 4);
+  check(true, 'SERP dynamically added matches highlighted');
+  await serp.evaluate(() => window.__changeStorage({ searchTargetDomain: { newValue: 'other.test' } }, 'local'));
+  await serp.waitForFunction(() => document.querySelectorAll('[data-seo-lens-result]').length === 1);
+  check(await serp.locator('a[data-seo-lens-result]').textContent() === 'Other', 'SERP reacts to stored target domain changes');
+  await serp.evaluate(() => window.__changeStorage({ searchTargetDomain: { newValue: '' } }, 'local'));
+  check(await serp.locator('[data-seo-lens-result]').count() === 0 && await serp.locator('aside[data-seo-lens-search-ui]').count() === 0, 'empty target removes SERP highlights and badge');
+  check(errors.length === 0, 'popup and engine have no JS exceptions');
+  console.log(`PASS ${checks} integration checks; screenshots: ${artifacts}`);
+})().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => { await browser?.close(); server.close(); });
