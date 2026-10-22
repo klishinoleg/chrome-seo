@@ -65,14 +65,15 @@ const check = (condition, description) => { assert.ok(condition, description); c
   await popup.addInitScript(({ fixtureUrl }) => {
     globalThis.chrome = {
       tabs: { query: async () => [{ id: 1, url: fixtureUrl }], create: data => __openTab(data) },
-      storage: { local: { get: () => __storageGet(), set: data => __storageSet(data) } },
+      storage: { local: { get: () => __storageGet(), set: data => __storageSet(data) }, onChanged: { addListener: () => {} } },
+      runtime: { getURL: file => file, sendMessage: async () => ({ ok: true, state: { data: { version: 1, lists: [] }, selectedListId: null, sync: { connected: false, directoryName: null, pending: false, error: null, lastSyncedAt: null } } }) },
       scripting: { executeScript: async options => options.files ? [] : [{ result: await __invokeBackend(...options.args) }] }
     };
   }, { fixtureUrl: fixture.url() });
   popup.on('pageerror', error => errors.push(error.message));
   await popup.goto(`${base}/popup.html`);
   await popup.locator('#meta h1').waitFor();
-  check(await popup.locator('[data-tab]').count() === 5, 'five functional inspector tabs');
+  check(await popup.locator('[data-tab]').count() === 6, 'six functional inspector tabs');
   check((await popup.locator('#meta').textContent()).includes('Кот café A+B'), 'META rendered live fixture data');
   fs.mkdirSync(artifacts, { recursive: true });
   await popup.screenshot({ path: path.join(artifacts, 'meta.png') });
