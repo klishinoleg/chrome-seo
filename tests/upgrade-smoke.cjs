@@ -29,7 +29,7 @@ let browser;
   await page.goto(`chrome-extension://${id}/library.html`);
   const registered = await page.evaluate(() => ({ version: chrome.runtime.getManifest().version, background: chrome.runtime.getManifest().background || null }));
   assert.deepEqual(registered, { version: '0.1.0', background: null });
-  console.log('PASS registered manifest still0.1.0 without background while source files are0.1.1');
+  console.log('PASS registered manifest still0.1.0 without background while source files are current version');
   await page.locator('#new-name').fill('explore-bulgaria-links');
   await page.locator('#new-list').click();
   await page.waitForFunction(() => document.querySelector('#message').textContent.length > 0);

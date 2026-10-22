@@ -2,24 +2,77 @@
 const $ = (id) => document.getElementById(id);
 let snapshot = null;
 let linksSaveBusy = false;
+let analysisGeneration = 0;
+const indexabilityCaveat = 'Наличие URL в индексе поисковых систем не проверено. HTTP-заголовки получены повторным HEAD-запросом, а не из ответа навигации.';
+function renderIndexability(data, signals) {
+ const target=$('indexability-status');
+ if(!target) return;
+ let result={state:'partial',label:'Проверка неполная',reasons:['Сетевые сигналы ещё не получены.']};
+ if(signals && globalThis.SeoIndexability?.evaluate) {
+  try { result=globalThis.SeoIndexability.evaluate(data,signals); }
+  catch { result.reasons=['Не удалось оценить правила индексации.']; }
+ }
+ target.textContent=result.label;
+ target.className=`indexability ${result.state}`;
+ target.title=[...result.reasons,indexabilityCaveat].join('\n');
+ target.setAttribute('aria-label',`${result.label}. ${target.title}`);
+}
+async function collectIndexability(data, tabId, generation) {
+ const isCurrent=()=>generation===analysisGeneration && snapshot?.url===data.url;
+ try {
+  if(!globalThis.SeoIndexability?.collect) throw new Error('Модуль проверки недоступен.');
+  const [active]=await chrome.tabs.query({active:true,currentWindow:true});
+  if(active?.id!==tabId || active.url!==data.url) throw new Error('Активная страница изменилась; обновите анализ.');
+  const results=await chrome.scripting.executeScript({target:{tabId},func:globalThis.SeoIndexability.collect});
+  const signals=results[0]?.result;
+  if(!signals || signals.url!==data.url) throw new Error('Страница изменилась во время проверки; обновите анализ.');
+  if(isCurrent()) renderIndexability(data,signals);
+ } catch(error) {
+  if(!isCurrent()) return;
+  renderIndexability(data,null);
+  const target=$('indexability-status');
+  if(target) {target.title=`${error.message || error}\n${indexabilityCaveat}`;target.setAttribute('aria-label',`${target.textContent}. ${target.title}`);}
+ }
+}
+async function analyzePage() {
+ const generation=++analysisGeneration;
+ renderIndexability(snapshot,null);
+ let tabId;
+ const data=await invoke('analyze',undefined,tab=>{tabId=tab.id;});
+ if(generation!==analysisGeneration) return false;
+ snapshot=data;
+ $('page').textContent=data.url;
+ $('page').title=data.url;
+ if($('copy-page-url')) $('copy-page-url').disabled=false;
+ renderMeta(data); renderMicro(data.micro); renderLinks();
+ renderIndexability(data,null);
+ void collectIndexability(data,tabId,generation);
+ return true;
+}
 const status = (message = '') => { $('status').textContent = message; };
 function element(tag, text, className) { const node = document.createElement(tag); if (text !== undefined) node.textContent = String(text); if (className) node.className = className; return node; }
 function table(headers, rows) { const wrap = element('div', undefined, 'table-wrap'); const t = element('table'); const head = element('tr'); headers.forEach(x => head.append(element('th', x))); const thead = element('thead'); thead.append(head); t.append(thead); const body = element('tbody'); rows.forEach(values => { const tr = element('tr'); values.forEach(value => { const td = element('td'); if (value instanceof Node) td.append(value); else td.textContent = String(value ?? '—'); tr.append(td); }); body.append(tr); }); t.append(body); wrap.append(t); if (!rows.length) wrap.append(element('p', 'Не найдено', 'empty')); return wrap; }
 function section(target, title, headers, rows) { target.append(element('h2', title), table(headers, rows)); }
-async function invoke(method, input) { const [tab] = await chrome.tabs.query({active:true,currentWindow:true}); if (!tab?.id || !/^https?:/i.test(tab.url || '')) throw new Error('Откройте обычную HTTP(S)-страницу. Внутренние страницы Chrome и магазин расширений недоступны.'); await chrome.scripting.executeScript({target:{tabId:tab.id},files:['content.js']}); const result = await chrome.scripting.executeScript({target:{tabId:tab.id},func:(name,arg) => globalThis.__chromeSeo[name](arg),args:[method,input ?? '']}); return result[0]?.result; }
+async function invoke(method, input, onTab) { const [tab] = await chrome.tabs.query({active:true,currentWindow:true}); if (!tab?.id || !/^https?:/i.test(tab.url || '')) throw new Error('Откройте обычную HTTP(S)-страницу. Внутренние страницы Chrome и магазин расширений недоступны.'); if(onTab) onTab(tab); await chrome.scripting.executeScript({target:{tabId:tab.id},files:['content.js']}); const result = await chrome.scripting.executeScript({target:{tabId:tab.id},func:(name,arg) => globalThis.__chromeSeo[name](arg),args:[method,input ?? '']}); return result[0]?.result; }
 async function action(work) { status('Выполняется…'); try { await work(); } catch (error) { status(`Не удалось выполнить: ${error.message || error}. Проверьте, доступна ли страница для расширений.`); } }
 function renderMeta(data) { const panel = $('meta'); panel.replaceChildren(element('h1','META / документ')); const metrics=element('div',undefined,'metrics'); [['H1',data.headings.filter(x=>x.tag.toLowerCase()==='h1').length],['Слов',data.wordCount],['Внешних ссылок',data.links.length],['Без ALT',data.images.filter(x=>!x.hasAlt).length]].forEach(([label,value])=>{const item=element('div',undefined,'metric');item.append(element('b',value),element('span',label));metrics.append(item);}); panel.append(metrics); panel.append(table(['Параметр','Значение'],[['URL',data.url],['Домен',data.hostname],[`Title · ${data.title.length} зн.`,data.title],[`Description · ${data.description.length} зн.`,data.description],['Canonical',data.canonical],['Robots',data.robots],['Язык',data.lang],['Слов в видимом тексте',data.wordCount],['Robots ограничивает ссылки',data.pageNofollow ? 'Да' : 'Нет']])); section(panel,'Заголовки H1–H6',['Тег','Текст'],data.headings.map(x=>[x.tag,x.text])); section(panel,'Open Graph',['Свойство','Содержимое'],data.openGraph.map(x=>[x.property,x.content])); section(panel,`Изображения / ${data.images.length}`,['Источник','ALT','Атрибут ALT'],data.images.map(x=>[x.src,x.alt,x.hasAlt?'Есть':'Отсутствует'])); }
 function renderMicro(data) { const panel=$('micro'); panel.replaceChildren(element('h1','Микроразметка')); panel.append(element('h2',`JSON-LD / ${data.jsonLd.length}`)); if (!data.jsonLd.length) panel.append(element('p','Не найдено','empty')); data.jsonLd.forEach((x,i)=>{panel.append(element('h2',`Блок ${i+1}`)); if(x.error) panel.append(element('p',`Ошибка JSON: ${x.error}`,'bad')); panel.append(element('pre', x.error ? x.raw : JSON.stringify(x.data,null,2)));}); section(panel,'Microdata',['Тип','ID','Свойства'],data.microdata.map(x=>[x.type,x.id,x.properties.map(p=>`${p.name}: ${p.value}`).join('\n')])); section(panel,'RDFa',['Тег','about','typeof','property','content'],data.rdfa.map(x=>[x.tag,x.about,x.typeof,x.property,x.content])); }
 function matchingLinks(data) { const filter=$('links-domain').value.trim().toLowerCase(); return data.links.filter(x=>x.domain.toLowerCase().includes(filter)); }
 function renderLinksSave() { const list=listsState?.data.lists.find(x=>x.id===listsState.selectedListId); const label=list?.name || 'Выберите список в LISTS'; $('links-current-list').textContent=label; $('links-current-list').title=label; $('save-links-page').disabled=linksSaveBusy || !list || !snapshot || !matchingLinks(snapshot).length; }
 function renderLinks() { if(!snapshot) return; const links=matchingLinks(snapshot); renderLinksSave(); $('link-count').textContent=`${links.length} / ${snapshot.links.length}`; const rows=links.map(x=>{const marker=element('span',x.restricted?'Ограничена':'Без ограничений',x.restricted?'bad':'good');return [marker,x.text || '(без текста)',x.domain,x.url,x.rel || '—'];}); $('link-results').replaceChildren(table(['Статус','Текст','Домен','URL','rel'],rows)); }
-async function refresh() { await action(async()=>{snapshot=await invoke('analyze'); $('page').textContent=snapshot.url; $('page').title=snapshot.url; renderMeta(snapshot); renderMicro(snapshot.micro); renderLinks(); status('');}); }
+async function refresh() { await action(async()=>{if(await analyzePage()) status('');}); }
 async function count() { const data=await invoke('keywords',$('keywords').value); const headers=['Слово','Всего','Title','Meta','H1','H2','H3','H4','H5','H6','Body','P','A','Other']; const names=['total','title','meta','h1','h2','h3','h4','h5','h6','body','p','a','other']; const rows=data.words.map(x=>{const name=element('span'); const chip=element('span',undefined,'chip'); chip.style.backgroundColor=x.color; name.append(chip,document.createTextNode(x.word));return [name,...names.map(n=>x[n])];}); $('key-results').replaceChildren(element('p',`Слов в видимом тексте: ${data.wordCount}`,'hint'),table(headers,rows)); }
 function highlightResult(result) { status(result.supported ? `Подсвечено совпадений: ${result.count}` : (result.message || 'Этот браузер не поддерживает CSS Custom Highlight API.')); }
 async function saveSearch() { await chrome.storage.local.set({searchTargetDomain:$('search-domain').value.trim(),searchQuery:$('search-query').value}); }
 async function search(engine,mode='query') { await saveSearch(); const domain=$('search-domain').value.trim().replace(/^https?:\/\//i,'').split('/')[0]; const query=$('search-query').value.trim(); let text=query; if(mode==='site') {if(!domain) throw new Error('Укажите целевой домен'); text=`site:${domain}${query?' '+query:''}`;} if(mode==='url') {if(!snapshot?.url) throw new Error('Сначала откройте доступную страницу и обновите анализ'); text=`site:${snapshot.url}${query?' '+query:''}`;} if(!text) throw new Error('Введите поисковый запрос'); const url=engine==='google'?`https://www.google.com/search?q=${encodeURIComponent(text)}`:`https://yandex.ru/search/?text=${encodeURIComponent(text)}`; await chrome.tabs.create({url}); status('Поиск открыт в новой вкладке.'); }
 document.querySelectorAll('[data-tab]').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===button)); document.querySelectorAll('.panel').forEach(x=>x.classList.toggle('active',x.id===button.dataset.tab));}));
 $('refresh').addEventListener('click',refresh);
+$('copy-page-url')?.addEventListener('click',async()=>{
+ const url=snapshot?.url;
+ if(!url) {status('Сначала обновите анализ страницы.');return;}
+ try {await navigator.clipboard.writeText(url);status('Полный URL скопирован.');}
+ catch {status('Не удалось скопировать URL. Повторите попытку или скопируйте его из адресной строки.');}
+});
 $('count').addEventListener('click',()=>action(async()=>{await count();status('');}));
 $('highlight-keys').addEventListener('click',()=>action(async()=>{await count();highlightResult(await invoke('highlightKeywords',$('keywords').value));}));
 $('highlight-links').addEventListener('click',()=>action(async()=>highlightResult(await invoke('highlightLinks',$('links-domain').value.trim()))));
@@ -64,12 +117,7 @@ $('save-links-page').addEventListener('click',async()=>{
  $('save-links-page').disabled=true;
  status('Сохранение страницы…');
  try {
-  snapshot=await invoke('analyze');
-  $('page').textContent=snapshot.url;
-  $('page').title=snapshot.url;
-  renderMeta(snapshot);
-  renderMicro(snapshot.micro);
-  renderLinks();
+  if(!await analyzePage()) throw new Error('Анализ обновлён другим действием; повторите сохранение.');
   const state=await listsCall('get');
   const list=state.data.lists.find(x=>x.id===state.selectedListId);
   if(!list) throw new Error('Выберите список в LISTS');

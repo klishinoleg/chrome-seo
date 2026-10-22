@@ -68,6 +68,7 @@
       url: location.href, hostname: location.hostname, title: document.title,
       description: meta('description'), canonical: document.querySelector('link[rel~="canonical"]')?.href || '',
       robots: ['robots', 'googlebot', 'yandex'].map(meta).filter(Boolean).join(', '), lang: document.documentElement.lang,
+      robotMeta: [...document.querySelectorAll('meta[name]')].filter(el => ['robots', 'googlebot', 'yandex'].includes(el.name.toLowerCase())).map(el => ({ name: el.name.toLowerCase(), content: el.content })),
       openGraph: [...document.querySelectorAll('meta[property]')].filter(el => el.getAttribute('property').toLowerCase().startsWith('og:')).map(el => ({ property: el.getAttribute('property'), content: el.content })),
       headings: [...document.querySelectorAll('h1,h2,h3,h4,h5,h6')].filter(visible).map(el => ({ tag: el.tagName.toLowerCase(), text: stream(el).text.trim() })),
       images: [...document.images].map(el => ({ src: el.currentSrc || el.src, alt: el.getAttribute('alt') || '', hasAlt: el.hasAttribute('alt') })),
