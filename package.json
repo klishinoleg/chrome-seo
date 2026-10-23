@@ -4,7 +4,7 @@
   "private": true,
   "description": "Native Manifest V3 SEO inspector; no build step",
   "scripts": {
-    "test": "node tests/browser-smoke.cjs && node tests/lists-smoke.cjs && node tests/upgrade-smoke.cjs && node tests/links-save-smoke.cjs && node tests/indexability-smoke.cjs && node tests/history-smoke.cjs",
+    "test": "node tests/browser-smoke.cjs && node tests/lists-smoke.cjs && node tests/upgrade-smoke.cjs && node tests/links-save-smoke.cjs && node tests/indexability-smoke.cjs && node tests/history-smoke.cjs && node tests/in-list-smoke.cjs",
     "check": "node --check popup.js && node --check library.js && node --check lists-recovery.js && node --check background.js && node --check lists-store.js && node --check content.js && node --check serp.js && node --check indexability.js && node --check input-history.js"
   },
   "devDependencies": {

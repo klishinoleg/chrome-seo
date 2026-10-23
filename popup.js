@@ -3,6 +3,37 @@ const $ = (id) => document.getElementById(id);
 let snapshot = null;
 let linksSaveBusy = false;
 let analysisGeneration = 0;
+let membershipPageUrl = null;
+let membershipTabId = null;
+let membershipListsReady = false;
+let listsGeneration = 0;
+function normalizedHostname(value) {
+ try {
+  const url=new URL(value);
+  if(!['http:','https:'].includes(url.protocol)) return null;
+  return url.hostname.toLowerCase().replace(/\.+$/,'').replace(/^www\./,'') || null;
+ } catch { return null; }
+}
+function renderInList() {
+ const target=$('in-list-status');
+ if(!target) return;
+ const hostname=normalizedHostname(membershipPageUrl);
+ const list=membershipListsReady && listsState?.data.lists.find(x=>x.id===listsState.selectedListId);
+ let state='unknown';
+ let title=!hostname ? 'Обновите анализ доступной HTTP(S)-страницы.' : !membershipListsReady ? 'Данные списков недоступны или обновляются.' : 'Выберите текущий список в LISTS.';
+ if(hostname && list) {
+  const present=list.items.some(item=>normalizedHostname(item.url)===hostname);
+  state=present ? 'present' : 'absent';
+  title='Домен '+hostname+(present ? ' найден' : ' не найден')+' в списке «'+list.name+'». Сравниваются домены URL; www и завершающая точка не учитываются.';
+ }
+ target.dataset.state=state;
+ target.title=title;
+ target.setAttribute('aria-label','IN LIST. '+title);
+}
+function invalidateMembershipPage() {
+ membershipPageUrl=null;
+ renderInList();
+}
 const indexabilityCaveat = 'Наличие URL в индексе поисковых систем не проверено. HTTP-заголовки получены повторным HEAD-запросом, а не из ответа навигации.';
 function renderIndexability(data, signals) {
  const target=$('indexability-status');
@@ -36,11 +67,18 @@ async function collectIndexability(data, tabId, generation) {
 }
 async function analyzePage() {
  const generation=++analysisGeneration;
+ invalidateMembershipPage();
  renderIndexability(snapshot,null);
  let tabId;
  const data=await invoke('analyze',undefined,tab=>{tabId=tab.id;});
  if(generation!==analysisGeneration) return false;
+ const [active]=await chrome.tabs.query({active:true,currentWindow:true});
+ if(generation!==analysisGeneration) return false;
+ if(active?.id!==tabId || active.url!==data?.url || !normalizedHostname(data?.url)) throw new Error('Активная страница изменилась; обновите анализ.');
+ membershipPageUrl=data.url;
+ membershipTabId=tabId;
  snapshot=data;
+ renderInList();
  $('page').textContent=data.url;
  $('page').title=data.url;
  if($('copy-page-url')) $('copy-page-url').disabled=false;
@@ -89,8 +127,21 @@ const recovery=seoListsRecovery;
 for(const id of ['list-name','list-comment','list-tags']) {$(id).value=recovery.drafts[id] || '';$(id).addEventListener('input',()=>{try{recovery.save();}catch{}});}
 recovery.capture(()=>{for(const id of ['list-name','list-comment','list-tags']) recovery.drafts[id]=$(id).value;});
 const parseTags = value => { const seen=new Set();return value.split(',').map(x=>x.trim()).filter(x=>{const key=x.toLowerCase();if(!x || seen.has(key))return false;seen.add(key);return true;}); };
-async function listsCall(action, payload = {}) { const result = await chrome.runtime.sendMessage({type:'seoLists',action,...payload}); if (!result?.ok) throw new Error(result?.error || 'Хранилище недоступно'); listsState = result.state; renderLists(); return result.state; }
-function renderLists() { renderLinksSave(); if (!listsState) return; const select = $('list-select'); select.replaceChildren(); listsState.data.lists.forEach(list => { const option = element('option', list.name); option.value = list.id; select.append(option); }); select.value = listsState.selectedListId || ''; const list = listsState.data.lists.find(x => x.id === select.value); $('save-list-page').disabled = !list; $('list-tag-options').replaceChildren(); $('list-tag-suggestions').replaceChildren(); (list?.tags || []).forEach(tag => { const option = element('option'); option.value = tag; $('list-tag-options').append(option); const button = element('button',tag); button.addEventListener('click',()=>{const tags=parseTags($('list-tags').value);if(!tags.some(x=>x.toLowerCase()===tag.toLowerCase())) tags.push(tag);$('list-tags').value=tags.join(', ');try{recovery.save();}catch{}}); $('list-tag-suggestions').append(button); }); const sync=listsState.sync; $('list-sync').textContent = sync.pending ? `JSON: ожидает синхронизации. ${sync.error || 'Подключите папку в библиотеке.'}` : sync.connected ? `JSON: ${sync.directoryName || 'папка'} · синхронизировано` : 'Хранится в Chrome. Папку JSON можно подключить в библиотеке.'; }
+async function listsCall(action, payload = {}) {
+ const generation=++listsGeneration;
+ membershipListsReady=false;
+ renderInList();
+ try {
+  const result=await chrome.runtime.sendMessage({type:'seoLists',action,...payload});
+  if(!result?.ok || !Array.isArray(result.state?.data?.lists)) throw new Error(result?.error || 'Хранилище недоступно');
+  if(generation===listsGeneration) {listsState=result.state;membershipListsReady=true;renderLists();}
+  return result.state;
+ } catch(error) {
+  if(generation===listsGeneration) {membershipListsReady=false;renderInList();}
+  throw error;
+ }
+}
+function renderLists() { renderInList(); renderLinksSave(); if (!listsState) return; const select = $('list-select'); select.replaceChildren(); listsState.data.lists.forEach(list => { const option = element('option', list.name); option.value = list.id; select.append(option); }); select.value = listsState.selectedListId || ''; const list = listsState.data.lists.find(x => x.id === select.value); $('save-list-page').disabled = !list; $('list-tag-options').replaceChildren(); $('list-tag-suggestions').replaceChildren(); (list?.tags || []).forEach(tag => { const option = element('option'); option.value = tag; $('list-tag-options').append(option); const button = element('button',tag); button.addEventListener('click',()=>{const tags=parseTags($('list-tags').value);if(!tags.some(x=>x.toLowerCase()===tag.toLowerCase())) tags.push(tag);$('list-tags').value=tags.join(', ');try{recovery.save();}catch{}}); $('list-tag-suggestions').append(button); }); const sync=listsState.sync; $('list-sync').textContent = sync.pending ? `JSON: ожидает синхронизации. ${sync.error || 'Подключите папку в библиотеке.'}` : sync.connected ? `JSON: ${sync.directoryName || 'папка'} · синхронизировано` : 'Хранится в Chrome. Папку JSON можно подключить в библиотеке.'; }
 async function listsAction(work) { try { await work(); } catch(error) { recovery.explain(error);$('list-status').textContent=error.message || String(error); } }
 $('create-list').addEventListener('click',()=>listsAction(async()=>{await listsCall('createList',{name:$('list-name').value.trim()});$('list-name').value='';recovery.save();$('list-status').textContent='Список создан.';}));
 $('list-select').addEventListener('change',()=>listsAction(()=>listsCall('selectList',{listId:$('list-select').value})));
@@ -134,4 +185,12 @@ $('save-links-page').addEventListener('click',async()=>{
   linksSaveBusy=false;
   renderLinksSave();
  }
+});
+
+// Tab events are optional in embedded browser bridges.
+chrome.tabs.onActivated?.addListener(()=>{++analysisGeneration;membershipTabId=null;invalidateMembershipPage();void refresh();});
+chrome.tabs.onUpdated?.addListener((tabId,change)=>{
+ if(tabId!==membershipTabId && membershipTabId!==null) return;
+ if(change.url || change.status==='loading') {++analysisGeneration;invalidateMembershipPage();}
+ if(change.status==='complete') void refresh();
 });
