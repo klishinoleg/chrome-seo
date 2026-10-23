@@ -1,4 +1,4 @@
-# SEO / инспектор 0.1.2
+# SEO / инспектор 0.1.3
 
 Локальное расширение Chrome Manifest V3 на русском языке. Установка: откройте chrome://extensions, включите режим разработчика, нажмите «Загрузить распакованное расширение» и выберите C:/ai/chrome-seo. Сборка и зависимости не нужны.
 
@@ -19,7 +19,7 @@
 
 Проверки: `npm install`, `npm run check`, `npm test` (браузерные поведенческие проверки через Playwright). В Windows runner использует установленный Chrome; иначе установите браузер командой `npx playwright install chromium`. Путь можно указать переменной `CHROME_PATH`. Для использования расширения зависимости не нужны.
 
-Проверено: 141 проверка — 12 анализатора, 26 прежних интеграционных, 42 списков, 4 обновления расширения, 17 быстрого сохранения из LINKS и 40 правил индексации, статуса и копирования URL. Runner загружает исходное расширение в Chrome, проверяет content script поиска и local storage; формы popup тестируются через мост к анализатору в настоящем браузере. Списки проверены через настоящий MV3 worker, Chrome storage, IndexedDB и реальную OPFS-папку: сохранение, теги, таблица, экспорт, перезапуск worker, конфликт внешнего изменения и отказ разрешения. Метаданные активной вкладки для popup подставляет тестовый мост; системный выбор папки и реальный запрос разрешения проверяются вручную. Автоматизация не нажимает кнопку расширения на панели Chrome для выдачи activeTab.
+Проверено: 161 проверка — 12 анализатора, 26 прежних интеграционных, 42 списков, 4 обновления расширения, 17 быстрого сохранения из LINKS, 40 правил индексации, статуса и копирования URL и 20 истории ввода. Runner загружает исходное расширение в Chrome, проверяет content script поиска и local storage; формы popup тестируются через мост к анализатору в настоящем браузере. Списки проверены через настоящий MV3 worker, Chrome storage, IndexedDB и реальную OPFS-папку: сохранение, теги, таблица, экспорт, перезапуск worker, конфликт внешнего изменения и отказ разрешения. Метаданные активной вкладки для popup подставляет тестовый мост; системный выбор папки и реальный запрос разрешения проверяются вручную. Автоматизация не нажимает кнопку расширения на панели Chrome для выдачи activeTab.
 
 Справка: [Chrome Scripting API](https://developer.chrome.com/docs/extensions/reference/api/scripting), [Chrome File System Access API](https://developer.chrome.com/docs/capabilities/web-apis/file-system-access), [Google о rel у исходящих ссылок](https://developers.google.com/search/docs/crawling-indexing/qualify-outbound-links).
 
@@ -28,3 +28,5 @@
 О перезагрузке после изменения манифеста: [документация Chrome](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world#reload-the-extension).
 
 Правила проверки: [robots.txt Google](https://developers.google.com/crawling/docs/robots-txt/robots-txt-spec), [meta robots и X-Robots-Tag](https://developers.google.com/search/docs/crawling-indexing/robots-meta-tag), [сетевые запросы расширений Chrome](https://developer.chrome.com/docs/extensions/develop/concepts/network-requests).
+
+История ввода: под доменом и запросом SEARCH и фильтром LINKS доступны отдельные наборы из 12 последних значений. Значения сохраняются при подтверждении изменения, Enter и действии; ввод каждого символа историю не меняет. Нажатие на тег подставляет значение без запуска поиска или подсветки, крестик удаляет только тег. История хранится локально в Chrome, дубликаты определяются без учёта регистра; длина значения ограничена 2000 символами.

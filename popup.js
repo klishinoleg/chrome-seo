@@ -64,7 +64,7 @@ async function refresh() { await action(async()=>{if(await analyzePage()) status
 async function count() { const data=await invoke('keywords',$('keywords').value); const headers=['Слово','Всего','Title','Meta','H1','H2','H3','H4','H5','H6','Body','P','A','Other']; const names=['total','title','meta','h1','h2','h3','h4','h5','h6','body','p','a','other']; const rows=data.words.map(x=>{const name=element('span'); const chip=element('span',undefined,'chip'); chip.style.backgroundColor=x.color; name.append(chip,document.createTextNode(x.word));return [name,...names.map(n=>x[n])];}); $('key-results').replaceChildren(element('p',`Слов в видимом тексте: ${data.wordCount}`,'hint'),table(headers,rows)); }
 function highlightResult(result) { status(result.supported ? `Подсвечено совпадений: ${result.count}` : (result.message || 'Этот браузер не поддерживает CSS Custom Highlight API.')); }
 async function saveSearch() { await chrome.storage.local.set({searchTargetDomain:$('search-domain').value.trim(),searchQuery:$('search-query').value}); }
-async function search(engine,mode='query') { await saveSearch(); const domain=$('search-domain').value.trim().replace(/^https?:\/\//i,'').split('/')[0]; const query=$('search-query').value.trim(); let text=query; if(mode==='site') {if(!domain) throw new Error('Укажите целевой домен'); text=`site:${domain}${query?' '+query:''}`;} if(mode==='url') {if(!snapshot?.url) throw new Error('Сначала откройте доступную страницу и обновите анализ'); text=`site:${snapshot.url}${query?' '+query:''}`;} if(!text) throw new Error('Введите поисковый запрос'); const url=engine==='google'?`https://www.google.com/search?q=${encodeURIComponent(text)}`:`https://yandex.ru/search/?text=${encodeURIComponent(text)}`; await chrome.tabs.create({url}); status('Поиск открыт в новой вкладке.'); }
+async function search(engine,mode='query') { await Promise.all(['search-domain','search-query'].map(id=>globalThis.SeoInputHistory.remember(id))); await saveSearch(); const domain=$('search-domain').value.trim().replace(/^https?:\/\//i,'').split('/')[0]; const query=$('search-query').value.trim(); let text=query; if(mode==='site') {if(!domain) throw new Error('Укажите целевой домен'); text=`site:${domain}${query?' '+query:''}`;} if(mode==='url') {if(!snapshot?.url) throw new Error('Сначала откройте доступную страницу и обновите анализ'); text=`site:${snapshot.url}${query?' '+query:''}`;} if(!text) throw new Error('Введите поисковый запрос'); const url=engine==='google'?`https://www.google.com/search?q=${encodeURIComponent(text)}`:`https://yandex.ru/search/?text=${encodeURIComponent(text)}`; await chrome.tabs.create({url}); status('Поиск открыт в новой вкладке.'); }
 document.querySelectorAll('[data-tab]').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===button)); document.querySelectorAll('.panel').forEach(x=>x.classList.toggle('active',x.id===button.dataset.tab));}));
 $('refresh').addEventListener('click',refresh);
 $('copy-page-url')?.addEventListener('click',async()=>{
@@ -75,12 +75,12 @@ $('copy-page-url')?.addEventListener('click',async()=>{
 });
 $('count').addEventListener('click',()=>action(async()=>{await count();status('');}));
 $('highlight-keys').addEventListener('click',()=>action(async()=>{await count();highlightResult(await invoke('highlightKeywords',$('keywords').value));}));
-$('highlight-links').addEventListener('click',()=>action(async()=>highlightResult(await invoke('highlightLinks',$('links-domain').value.trim()))));
+$('highlight-links').addEventListener('click',()=>action(async()=>{await globalThis.SeoInputHistory.remember('links-domain');highlightResult(await invoke('highlightLinks',$('links-domain').value.trim()));}));
 document.querySelectorAll('.clear').forEach(button=>button.addEventListener('click',()=>action(async()=>{await invoke('clearHighlights');status('Подсветка очищена.');})));
 $('links-domain').addEventListener('input',()=>{renderLinks();chrome.storage.local.set({linksDomain:$('links-domain').value}).catch(error=>status(error.message));});
 ['search-domain','search-query'].forEach(id=>['input','change'].forEach(event=>$(id).addEventListener(event,()=>saveSearch().catch(error=>status(error.message)))));
 for(const engine of ['google','yandex']) { $(engine).addEventListener('click',()=>action(()=>search(engine))); $(`${engine}-site`).addEventListener('click',()=>action(()=>search(engine,'site'))); $(`${engine}-url`).addEventListener('click',()=>action(()=>search(engine,'url'))); }
-(async()=>{try {const saved=await chrome.storage.local.get(['linksDomain','searchTargetDomain','searchQuery']); $('links-domain').value=saved.linksDomain || ''; $('search-domain').value=saved.searchTargetDomain || ''; $('search-query').value=saved.searchQuery || '';}catch(error){status(error.message);} await refresh();})();
+(async()=>{try {const saved=await chrome.storage.local.get(['linksDomain','searchTargetDomain','searchQuery']); $('links-domain').value=saved.linksDomain || ''; $('search-domain').value=saved.searchTargetDomain || ''; $('search-query').value=saved.searchQuery || ''; await globalThis.SeoInputHistory.init();}catch(error){status(error.message);} await refresh();})();
 
 
 
@@ -117,6 +117,7 @@ $('save-links-page').addEventListener('click',async()=>{
  $('save-links-page').disabled=true;
  status('Сохранение страницы…');
  try {
+  await globalThis.SeoInputHistory.remember('links-domain');
   if(!await analyzePage()) throw new Error('Анализ обновлён другим действием; повторите сохранение.');
   const state=await listsCall('get');
   const list=state.data.lists.find(x=>x.id===state.selectedListId);
