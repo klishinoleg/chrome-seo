@@ -13,3 +13,5 @@ select{width:100%;padding:9px;background:#fff;color:#151916;border:1px solid #b9
 .in-list-status{flex:none;width:58px;text-align:center;white-space:nowrap;font-size:10px;font-weight:700;padding:2px 4px;border:1px solid #b9c3ae;border-radius:3px;color:#66715f;background:#e9eddf}.in-list-status[data-state="present"]{color:#217b42;background:#e0eddd;border-color:#91b89a}.in-list-status[data-state="absent"]{color:#a42d31;background:#f2e1dc;border-color:#d1a1a1}.in-list-status:focus-visible{outline:2px solid #688d23;outline-offset:3px}
 
 nav button{flex:1;padding:11px 9px;letter-spacing:.5px}#ai-schema:empty{display:none}#ai-schema{max-height:180px;overflow:auto}#ai-fields label{font-size:12px}#ai-source{overflow-wrap:anywhere}#ai-status,#deepseek-status{color:#7d3d19}select:focus-visible{outline:2px solid #688d23;outline-offset:2px}
+
+header>.opr-header{flex:0 0 auto;display:flex;align-items:center;gap:7px;margin-right:12px;color:#ccff5f}.opr-header button{padding:4px 7px;font-size:11px}.opr-header span{font-size:12px;white-space:nowrap}.opr-header span:focus-visible{outline:2px solid #ccff5f;outline-offset:3px}

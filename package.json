@@ -4,8 +4,8 @@
   "private": true,
   "description": "Native Manifest V3 SEO inspector; no build step",
   "scripts": {
-    "test": "node tests/browser-smoke.cjs && node tests/lists-smoke.cjs && node tests/upgrade-smoke.cjs && node tests/links-save-smoke.cjs && node tests/indexability-smoke.cjs && node tests/history-smoke.cjs && node tests/in-list-smoke.cjs && node tests/deepseek-smoke.cjs && node tests/deepseek-upgrade-smoke.cjs",
-    "check": "node --check popup.js && node --check library.js && node --check lists-recovery.js && node --check background.js && node --check lists-store.js && node --check content.js && node --check serp.js && node --check indexability.js && node --check input-history.js && node --check page-context.js && node --check deepseek.js && node --check ai-assistant.js"
+    "test": "node tests/browser-smoke.cjs && node tests/lists-smoke.cjs && node tests/upgrade-smoke.cjs && node tests/links-save-smoke.cjs && node tests/indexability-smoke.cjs && node tests/history-smoke.cjs && node tests/in-list-smoke.cjs && node tests/deepseek-smoke.cjs && node tests/deepseek-upgrade-smoke.cjs && node tests/opr-smoke.cjs && node tests/opr-upgrade-smoke.cjs",
+    "check": "node --check popup.js && node --check library.js && node --check lists-recovery.js && node --check background.js && node --check lists-store.js && node --check content.js && node --check serp.js && node --check indexability.js && node --check input-history.js && node --check page-context.js && node --check deepseek.js && node --check ai-assistant.js && node --check openpagerank.js && node --check opr-ui.js"
   },
   "devDependencies": {
     "playwright": "^1.56.1"

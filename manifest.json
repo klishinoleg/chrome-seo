@@ -36,6 +36,8 @@
     "service_worker": "background.js"
   },
   "host_permissions": [
-    "https://api.deepseek.com/*"
+    "https://api.deepseek.com/*",
+    "https://openpagerank.keywordseverywhere.com/*",
+    "https://api.keywordseverywhere.com/*"
   ]
 }
