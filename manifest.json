@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SEO / инспектор",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "META, ключевые слова, микроразметка и внешние ссылки текущей страницы.",
   "permissions": [
     "activeTab",
@@ -34,5 +34,8 @@
   ],
   "background": {
     "service_worker": "background.js"
-  }
+  },
+  "host_permissions": [
+    "https://api.deepseek.com/*"
+  ]
 }

@@ -1,0 +1,20 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Материал для комментария</title><style>.secret-hidden{display:none}</style></head><body>
+<nav>Служебная навигация NAV_EXCLUDED</nav>
+<main><article><h1>Как ухаживать за садом</h1><p>Поливайте растения утром и следите за состоянием почвы.</p><p>Мульча помогает сохранять влагу.</p><div hidden>HIDDEN_SECRET</div><div class="secret-hidden">CSS_HIDDEN_SECRET</div><script>globalThis.fixtureScript='SCRIPT_SECRET';</script></article>
+<form id="comment-form" onsubmit="globalThis.submitCount=(globalThis.submitCount||0)+1;return false">
+<h2>Оставить комментарий</h2>
+<label for="author">Имя<span hidden>LABEL_SECRET</span><span style="display:none">CSS_LABEL_SECRET</span></label><input id="author" name="author" value="EXISTING_PRIVATE_NAME" required>
+<label for="email">Email</label><input id="email" name="email" type="email" value="EXISTING_PRIVATE_EMAIL@example.net" required>
+<label for="website">Сайт</label><input id="website" name="website" type="url">
+<label for="comment">Комментарий<textarea id="comment" name="comment">EXISTING_PRIVATE_DRAFT</textarea></label>
+<label for="topic">Тема</label><select id="topic" name="topic"><option value="garden">Сад</option><option value="soil">Почва</option></select>
+<input type="hidden" name="csrf" value="HIDDEN_CSRF_TOKEN">
+<input type="file" name="attachment"><label><input type="checkbox" name="consent">Согласие</label>
+<input name="disabled-field" disabled value="DISABLED_SECRET"><input name="readonly-field" readonly value="READONLY_SECRET">
+<button type="submit">Отправить</button></form>
+<form id="second-form"><label>Поиск<input name="search" placeholder="Что ищем?"></label></form>
+<form id="login-form"><input name="username" value="LOGIN_PRIVATE_VALUE"><input type="password" name="password" value="PASSWORD_SECRET"></form>
+<div><label for="orphan">Заметка</label><textarea id="orphan">ORPHAN_PRIVATE_DRAFT</textarea></div>
+</main><footer>FOOTER_EXCLUDED</footer>
+<script>globalThis.fieldEvents=[];document.addEventListener('input',e=>fieldEvents.push(['input',e.target.id]));document.addEventListener('change',e=>fieldEvents.push(['change',e.target.id]));</script>
+</body></html>

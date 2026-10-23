@@ -73,7 +73,7 @@ const check = (condition, description) => { assert.ok(condition, description); c
   popup.on('pageerror', error => errors.push(error.message));
   await popup.goto(`${base}/popup.html`);
   await popup.locator('#meta h1').waitFor();
-  check(await popup.locator('[data-tab]').count() === 6, 'six functional inspector tabs');
+  check(await popup.locator('[data-tab]').count() === 8, 'eight functional inspector tabs including AI and settings');
   check((await popup.locator('#meta').textContent()).includes('Кот café A+B'), 'META rendered live fixture data');
   fs.mkdirSync(artifacts, { recursive: true });
   await popup.screenshot({ path: path.join(artifacts, 'meta.png') });

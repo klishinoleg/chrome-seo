@@ -1,0 +1,166 @@
+/* DeepSeek assistant: real extension worker/IDB, mocked provider, real page DOM. */
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const http = require('node:http');
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const root = path.resolve(__dirname, '..');
+const server = http.createServer((req, res) => {
+  if (req.url === '/robots.txt') { res.writeHead(404).end(); return; }
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.end(fs.readFileSync(path.join(__dirname, 'deepseek-fixture.html')));
+});
+let browser, checks = 0;
+const check = (condition, label) => { assert.ok(condition, label); checks++; console.log(`PASS ${label}`); };
+(async () => {
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const installed = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
+  browser = await chromium.launchPersistentContext('', { executablePath: process.env.CHROME_PATH || (fs.existsSync(installed) ? installed : undefined), headless: true, viewport: { width: 800, height: 760 }, args: ['--enable-unsafe-extension-debugging'], ignoreDefaultArgs: ['--disable-extensions'] });
+  const cdp = await browser.browser().newBrowserCDPSession();
+  const { id } = await cdp.send('Extensions.loadUnpacked', { path: root });
+  const fixture = await browser.newPage();
+  await fixture.goto(`${base}/article`);
+  await fixture.addScriptTag({ path: path.join(root, 'content.js') });
+  await fixture.addScriptTag({ path: path.join(root, 'page-context.js') });
+  const context = await fixture.evaluate(() => __seoAiContext.snapshot());
+  check(context.text.includes('Поливайте растения') && context.text.includes('Мульча'), 'cleaned content retains meaningful article text');
+  check(!/NAV_EXCLUDED|FOOTER_EXCLUDED|HIDDEN_SECRET|CSS_HIDDEN_SECRET|SCRIPT_SECRET/.test(context.text), 'cleaned content excludes navigation footer scripts and hidden content');
+  check(!/EXISTING_PRIVATE|HIDDEN_CSRF|PASSWORD_SECRET|DISABLED_SECRET|READONLY_SECRET|ORPHAN_PRIVATE|LABEL_SECRET/.test(JSON.stringify(context)), 'page context never includes existing control values or hidden tokens');
+  const form = context.forms.find(form => form.fields.some(field => field.name === 'comment'));
+  assert.ok(form, 'comment form found');
+  const author = form.fields.find(field => field.name === 'author');
+  const comment = form.fields.find(field => field.name === 'comment');
+  const topic = form.fields.find(field => field.name === 'topic');
+  check(author.label.includes('Имя') && author.required && comment.label.includes('Комментарий'), 'detected form carries field labels types and required status');
+  check(!form.fields.some(field => ['password', 'csrf', 'attachment', 'consent', 'disabled-field', 'readonly-field'].includes(field.name)), 'unsafe disabled readonly consent and upload controls excluded');
+  check(topic.options.some(option => option.label === 'Почва'), 'select options are available for form suggestions');
+  check(context.forms.some(form => form.fields.some(field => field.id && field.label.includes('Заметка'))), 'standalone comment controls are detected');
+  const fillPayload = { contextId: context.contextId, url: context.url, formId: form.id, fields: [{ id: author.id, value: 'Олег' }, { id: comment.id, value: 'Спасибо за полезные советы.' }] };
+  const filled = await fixture.evaluate(payload => __seoAiContext.fill(payload), fillPayload);
+  check(filled.filled === 2 && await fixture.locator('#comment').inputValue() === 'Спасибо за полезные советы.', 'explicit fill inserts plain suggested values into known fields');
+  check(await fixture.evaluate(() => fieldEvents.length === 0), 'fill does not invoke submit-capable page input/change handlers');
+  check(await fixture.evaluate(() => !globalThis.submitCount && !document.querySelector('[name="consent"]').checked), 'fill never submits or accepts consent');
+  await fixture.locator('#author').evaluate(node => { node.type = 'password'; });
+  let unsafe;
+  try { unsafe = await fixture.evaluate(payload => __seoAiContext.fill(payload), fillPayload); } catch { unsafe = { filled: 0 }; }
+  check(unsafe.filled < 2 && await fixture.locator('#author').inputValue() === 'Олег', 'field changed to password cannot be filled from stale schema');
+  await fixture.locator('#author').evaluate(node => { node.type = 'text'; });
+  await fixture.evaluate(() => __seoAiContext.snapshot());
+  let staleRejected = false;
+  try { const result = await fixture.evaluate(payload => __seoAiContext.fill(payload), fillPayload); staleRejected = result.filled === 0; } catch { staleRejected = true; }
+  check(staleRejected, 'new extraction invalidates old form identifiers');
+  const popup = await browser.newPage();
+  const errors = [];
+  popup.on('pageerror', error => errors.push(error.message));
+  await popup.exposeFunction('__tabFixture', () => [{ id: 42, url: fixture.url(), title: 'Материал для комментария' }]);
+  await popup.exposeFunction('__engineBridge', async ({ files, source, args }) => {
+    if (files) return [];
+    return [{ result: await fixture.evaluate(({ source, args }) => (0, eval)(`(${source})`)(...(args || [])), { source, args }) }];
+  });
+  await popup.addInitScript(() => {
+    chrome.tabs.query = async () => __tabFixture();
+    chrome.scripting.executeScript = async options => __engineBridge({ files: options.files, source: options.func?.toString(), args: options.args });
+    navigator.clipboard.writeText = async text => { globalThis.__copied = text; };
+  });
+  await popup.goto(`chrome-extension://${id}/popup.html`);
+  const worker = browser.serviceWorkers()[0] || await browser.waitForEvent('serviceworker');
+  await worker.evaluate(() => {
+    globalThis.__providerCalls = [];
+    globalThis.__providerResponse = { status: 200, body: { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ comment: 'Спасибо! Теперь буду поливать утром.', fields: [] }) } }] } };
+    globalThis.fetch = async (url, options) => {
+      globalThis.__providerCalls.push({ url, body: JSON.parse(options.body), authorization: options.headers.Authorization || options.headers.authorization, credentials: options.credentials, redirect: options.redirect });
+      const reply = globalThis.__providerResponse;
+      return new Response(JSON.stringify(reply.body), { status: reply.status, headers: { 'Content-Type': 'application/json' } });
+    };
+  });
+  const rpc = (action, payload = {}) => popup.evaluate(message => chrome.runtime.sendMessage(message), { type: 'seoDeepSeek', action, ...payload });
+  const calls = () => worker.evaluate(() => __providerCalls);
+  let result = await rpc('generate', { task: 'Комментарий', context, formId: form.id });
+  check(!result.ok && (await calls()).length === 0, 'missing API key blocks generation before any network request');
+  await popup.locator('[data-tab="settings"]').click();
+  await popup.locator('#deepseek-key').fill('sk-test-deepseek-fake-only');
+  await popup.locator('#deepseek-save').click();
+  await popup.waitForFunction(() => document.querySelector('#deepseek-key').value === '' && document.querySelector('#deepseek-status').textContent.includes('Ключ сохранён'));
+  result = await rpc('getSettings');
+  check(result.ok && result.result.hasKey && !JSON.stringify(result).includes('sk-test'), 'settings status never returns saved secret');
+  check((await calls()).length === 0, 'saving key never sends page or performs a paid request');
+  check(!JSON.stringify(await popup.evaluate(() => chrome.storage.local.get(null))).includes('sk-test-deepseek'), 'API key is isolated from content-script-readable Chrome storage');
+  result = await rpc('saveSettings', { key: '', model: 'deepseek-flash' });
+  check(result.ok && result.result.hasKey, 'saving model with an empty key preserves existing key');
+  const denied = await worker.evaluate(async () => {
+    try { await SeoDeepSeek.dispatch({ action: 'getSettings' }, { id: chrome.runtime.id, url: 'https://attacker.example/', tab: { url: 'https://attacker.example/' } }); return false; }
+    catch { return true; }
+  });
+  check(denied, 'content-script sender cannot access DeepSeek settings or secret actions');
+  await popup.reload();
+  result = await rpc('getSettings');
+  check(result.ok && result.result.hasKey, 'API key persists after closing and reopening popup');
+  await popup.locator('[data-tab="ai"]').click();
+  await popup.locator('#ai-load-page').click();
+  await popup.waitForFunction(() => document.querySelector('#ai-page-text').value.includes('Поливайте'));
+  check((await calls()).length === 0, 'loading editable page preview does not send it to provider');
+  await popup.locator('#ai-page-text').fill('Отредактированный текст про утренний полив.');
+  await popup.locator('#ai-task').fill('Напиши короткий комментарий на русском языке.');
+  const currentContext = await fixture.evaluate(() => __seoAiContext.snapshot());
+  const currentForm = currentContext.forms.find(form => form.fields.some(field => field.name === 'comment'));
+  const currentComment = currentForm.fields.find(field => field.name === 'comment');
+  const currentEmail = currentForm.fields.find(field => field.name === 'email');
+  const currentWebsite = currentForm.fields.find(field => field.name === 'website');
+  const currentAuthor = currentForm.fields.find(field => field.name === 'author');
+  // Reload through UI after probing helper, so its active context token remains authoritative.
+  await popup.locator('#ai-load-page').click();
+  await popup.waitForFunction(() => document.querySelector('#ai-page-text').value.includes('Поливайте'));
+  await popup.locator('#ai-page-text').fill('Отредактированный текст про утренний полив.');
+  await popup.locator('#ai-form').selectOption(currentForm.id);
+  await worker.evaluate(fields => {
+    __providerResponse.body.choices[0].message.content = JSON.stringify({ comment: 'Спасибо! Теперь буду поливать утром.', fields });
+  }, [{ id: currentComment.id, value: 'Спасибо за совет!' }, { id: currentEmail.id, value: 'dmitry.garden@example.com' }, { id: currentWebsite.id, value: 'https://example.com/' }, { id: currentAuthor.id, value: 'Дмитрий Садовников' }]);
+  await popup.locator('#ai-generate').click();
+  await popup.waitForFunction(() => document.querySelector('#ai-comment').value.includes('Теперь буду'));
+  const sent = (await calls()).at(-1);
+  check(sent.url === 'https://api.deepseek.com/chat/completions' && sent.authorization === 'Bearer sk-test-deepseek-fake-only', 'request uses only official endpoint with bearer key');
+  check(sent.body.model === 'deepseek-flash' && !sent.body.stream, 'request uses documented model and bounded nonstream response');
+  check(JSON.stringify(sent.body).includes('Отредактированный текст') && JSON.stringify(sent.body).includes('Напиши короткий'), 'explicit generation sends user task and edited page text');
+  check(sent.body.response_format.type === 'json_object' && JSON.parse(sent.body.messages[1].content).pageContext.forms.length === 1, 'provider receives strict JSON output mode and only selected form schema');
+  check(!/EXISTING_PRIVATE|PASSWORD_SECRET|HIDDEN_CSRF/.test(JSON.stringify(sent.body)), 'provider payload excludes page control secrets');
+  check(sent.credentials === 'omit' && sent.redirect === 'error', 'provider request omits browser cookies and refuses credential redirects');
+  await popup.locator('#ai-copy').click();
+  check(await popup.evaluate(() => __copied) === 'Спасибо! Теперь буду поливать утром.', 'generated comment can be copied as plain text');
+  check(await fixture.evaluate(() => !globalThis.submitCount), 'generation never submits site form');
+  await popup.locator('#ai-suggestion-0').fill('Проверенный вручную комментарий.');
+  check((await popup.locator('#ai-fill').textContent()).trim() === 'Заполнить форму', 'structured result has explicit Fill form button');
+  await popup.locator('#ai-fill').click();
+  await popup.waitForFunction(() => document.querySelector('#ai-status').textContent.includes('Заполнено: 4'));
+  check(await fixture.locator('#comment').inputValue() === 'Проверенный вручную комментарий.', 'manual UI fill uses reviewed editable field suggestion');
+  check(await fixture.locator('#email').inputValue() === 'dmitry.garden@example.com' && await fixture.locator('#author').inputValue() === 'Дмитрий Садовников' && await fixture.locator('#website').inputValue() === 'https://example.com/', 'structured fictional contact values fill email name and website fields');
+  check(await fixture.evaluate(() => !globalThis.submitCount), 'manual UI fill leaves actual site form unsubmitted');
+  const screenshots = 'C:/Users/klish/.codex/visualizations/2026/10/22/01a1638b-a337-75d1-b3e3-680cfe652ad8';
+  fs.mkdirSync(screenshots, { recursive: true });
+  await popup.locator('#ai-comment').scrollIntoViewIfNeeded();
+  await popup.screenshot({ path: path.join(screenshots, 'chrome-seo-deepseek-result.png') });
+  const beforeErrors = (await calls()).length;
+  await worker.evaluate(() => { __providerResponse = { status: 401, body: { error: { message: 'sk-test-deepseek-fake-only provider echo' } } }; });
+  result = await rpc('generate', { task: 'Ответ', context: currentContext, formId: currentForm.id });
+  check(!result.ok && !JSON.stringify(result).includes('sk-test') && (await calls()).length === beforeErrors + 1, 'API authentication failure is sanitized and never retried automatically');
+  await worker.evaluate(() => { __providerResponse = { status: 200, body: { choices: [{ finish_reason: 'stop', message: { content: 'not JSON' } }] } }; });
+  result = await rpc('generate', { task: 'Ответ', context: currentContext, formId: currentForm.id });
+  check(!result.ok, 'malformed model output is rejected instead of inserted');
+  await worker.evaluate(() => { __providerResponse = { status: 200, body: { choices: [{ finish_reason: 'length', message: { content: JSON.stringify({ comment: 'Partial draft', fields: [] }) } }] } }; });
+  result = await rpc('generate', { task: 'Ответ', context: currentContext, formId: currentForm.id });
+  check(!result.ok, 'truncated provider response is rejected even if its JSON parses');
+  await worker.evaluate(({ emailId, authorId }) => { __providerResponse = { status: 200, body: { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ comment: 'Draft', fields: [{ id: emailId, value: 'invalid-email' }, { id: authorId, value: 'Дмитрий' }] }) } }] } }; }, { emailId: currentEmail.id, authorId: currentAuthor.id });
+  result = await rpc('generate', { task: 'Ответ', context: currentContext, formId: currentForm.id });
+  check(!result.ok, 'structured email field with invalid email is rejected');
+  await popup.locator('[data-tab="settings"]').click();
+  await popup.locator('#deepseek-delete').click();
+  await popup.waitForFunction(() => document.querySelector('#deepseek-status').textContent.includes('Ключ не задан'));
+  result = await rpc('getSettings');
+  check(result.ok && !result.result.hasKey, 'saved key can be deleted independently of URL lists');
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json')));
+  check(JSON.stringify(manifest.host_permissions) === JSON.stringify(['https://api.deepseek.com/*']) && manifest.version === '0.1.4', 'release adds only the provider host permission and version0.1.4');
+  check(errors.length === 0, 'AI and settings flows have no uncaught JavaScript exceptions');
+  await popup.locator('[data-tab="ai"]').click();
+  await popup.screenshot({ path: path.join(screenshots, 'chrome-seo-deepseek.png') });
+  console.log(`PASS ${checks} DeepSeek integration checks (provider mocked, no paid requests)`);
+})().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => { await browser?.close(); server.close(); });

@@ -1,0 +1,65 @@
+/* Reproduce new AI UI with an old still-running lists-only service worker. */
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const cp = require('node:child_process');
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+let browser, checks = 0;
+const check = (condition, label) => { assert.ok(condition, label); checks++; console.log(`PASS ${label}`); };
+(async () => {
+  const root = path.resolve(__dirname, '..');
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'seo-deepseek-upgrade-'));
+  for (const name of fs.readdirSync(root)) {
+    if (name.startsWith('.') || ['tests', 'node_modules'].includes(name)) continue;
+    fs.cpSync(path.join(root, name), path.join(fixture, name), { recursive: true });
+  }
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json')));
+  const oldManifest = { ...manifest, version: '0.1.3' };
+  delete oldManifest.host_permissions;
+  fs.writeFileSync(path.join(fixture, 'manifest.json'), JSON.stringify(oldManifest));
+  fs.writeFileSync(path.join(fixture, 'background.js'), cp.execFileSync('git', ['show', 'f8b498e:background.js'], { cwd: root }));
+  const installed = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
+  browser = await chromium.launchPersistentContext('', { executablePath: process.env.CHROME_PATH || (fs.existsSync(installed) ? installed : undefined), headless: true, viewport: { width: 800, height: 740 }, args: ['--enable-unsafe-extension-debugging'], ignoreDefaultArgs: ['--disable-extensions'] });
+  const chromeSettings = await browser.newPage();
+  await chromeSettings.goto('chrome://extensions');
+  await chromeSettings.evaluate(() => chrome.developerPrivate.updateProfileConfiguration({ inDeveloperMode: true }));
+  const cdp = await browser.browser().newBrowserCDPSession();
+  const { id } = await cdp.send('Extensions.loadUnpacked', { path: fixture });
+  let page = await browser.newPage();
+  await page.goto(`chrome-extension://${id}/library.html`);
+  await page.evaluate(() => chrome.runtime.sendMessage({ type: 'seoLists', action: 'createList', name: 'Сохранить при обновлении' }));
+  // Chrome does not replace its registered manifest/worker just because files changed.
+  fs.writeFileSync(path.join(fixture, 'manifest.json'), JSON.stringify(manifest));
+  fs.copyFileSync(path.join(root, 'background.js'), path.join(fixture, 'background.js'));
+  await page.goto(`chrome-extension://${id}/popup.html`);
+  await page.locator('[data-tab="settings"]').click();
+  check(await page.evaluate(() => chrome.runtime.sendMessage({ type: 'seoDeepSeek', action: 'getSettings' })) === undefined, 'cached old lists-only worker returns no response for DeepSeek messages');
+  check(await page.evaluate(() => chrome.runtime.getManifest().version) === '0.1.3', 'new0.1.4 UI can run with an old registered0.1.3 manifest');
+  await page.locator('#deepseek-key').fill('sk-test-upgrade-fake-only');
+  await page.locator('#deepseek-save').click();
+  await page.locator('#deepseek-reload').waitFor({ state: 'visible' });
+  const status = await page.locator('#deepseek-status').textContent();
+  check(/перезапуст|обнов/i.test(status) && !/Ключ сохранён/.test(status), 'old worker has actionable recovery instead of false key-save success');
+  check(!JSON.stringify(await page.evaluate(() => chrome.storage.local.get(null))).includes('sk-test-upgrade'), 'failed key draft is never persisted in shared storage');
+  const closed = page.waitForEvent('close');
+  const started = browser.waitForEvent('serviceworker', { predicate: worker => worker.url() === `chrome-extension://${id}/background.js`, timeout: 10000 }).catch(() => null);
+  await page.locator('#deepseek-reload').click();
+  await closed;
+  await started;
+  page = await browser.newPage();
+  await page.goto(`chrome-extension://${id}/popup.html`);
+  await page.locator('[data-tab="settings"]').click();
+  await page.waitForFunction(() => document.querySelector('#deepseek-status').textContent.includes('Ключ не задан'));
+  check(await page.evaluate(() => chrome.runtime.getManifest().host_permissions.includes('https://api.deepseek.com/*')), 'explicit reload registers provider permission and new API worker');
+  let settings = await page.evaluate(() => chrome.runtime.sendMessage({ type: 'seoDeepSeek', action: 'getSettings' }));
+  check(settings.ok && !settings.result.hasKey && await page.locator('#deepseek-key').inputValue() === '', 'reload never replays failed key mutation or stores secret drafts');
+  const lists = await page.evaluate(() => chrome.runtime.sendMessage({ type: 'seoLists', action: 'get' }));
+  check(lists.ok && lists.state.data.lists.some(list => list.name === 'Сохранить при обновлении'), 'whole-extension reload preserves saved lists');
+  await page.locator('#deepseek-key').fill('sk-test-upgrade-fake-only');
+  await page.locator('#deepseek-save').click();
+  await page.waitForFunction(() => document.querySelector('#deepseek-status').textContent.includes('Ключ сохранён'));
+  settings = await page.evaluate(() => chrome.runtime.sendMessage({ type: 'seoDeepSeek', action: 'getSettings' }));
+  check(settings.ok && settings.result.hasKey, 'one deliberate save after reload persists key successfully');
+  console.log(`PASS ${checks} DeepSeek upgrade recovery checks`);
+})().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => { await browser?.close(); });
