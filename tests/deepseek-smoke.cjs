@@ -159,7 +159,7 @@ const check = (condition, label) => { assert.ok(condition, label); checks++; con
   check(result.ok && !result.result.hasKey, 'saved key can be deleted independently of URL lists');
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json')));
   const allowedHosts = ['api.deepseek.com', 'api.keywordseverywhere.com', 'openpagerank.keywordseverywhere.com', 'google.com', 'www.google.com', 'google.ru', 'www.google.ru', 'yandex.com', 'www.yandex.com', 'yandex.ru', 'www.yandex.ru', 'wordstat.yandex.ru'];
-  check(manifest.host_permissions.every(pattern => allowedHosts.some(host => pattern === `https://${host}/*`)) && manifest.version === '0.1.8', 'release permits only configured provider/search hosts and version0.1.8');
+  check(manifest.host_permissions.every(pattern => allowedHosts.some(host => pattern === `https://${host}/*`)) && manifest.version === '0.1.9', 'release permits only configured provider/search hosts and version0.1.9');
   check(errors.length === 0, 'AI and settings flows have no uncaught JavaScript exceptions');
   await popup.locator('[data-tab="ai"]').click();
   await popup.screenshot({ path: path.join(screenshots, 'chrome-seo-deepseek.png') });

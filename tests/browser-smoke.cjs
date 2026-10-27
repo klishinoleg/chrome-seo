@@ -133,7 +133,7 @@ const check = (condition, description) => { assert.ok(condition, description); c
   await popup.waitForFunction(() => document.querySelector('#status').textContent.includes('Поиск открыт'));
   check(new URL(opened.at(-1)).searchParams.get('text') === 'site:outside.test кот café', 'Yandex site query URL');
   await popup.reload();
-  await popup.locator('#meta h1').waitFor();
+  await popup.locator('#meta h1').waitFor({ state: 'attached' });
   check(await popup.locator('#links-domain').inputValue() === 'outside.test' && await popup.locator('#search-domain').inputValue() === 'outside.test', 'LINKS and SEARCH domains survive reload');
   check(await popup.locator('#search-query').inputValue() === 'кот café', 'search query survives reload');
   // Isolate the synthetic storage harness from the manifest's real content script.

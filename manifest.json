@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SEO / инспектор",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "META, ключевые слова, микроразметка и внешние ссылки текущей страницы.",
   "permissions": [
     "activeTab",

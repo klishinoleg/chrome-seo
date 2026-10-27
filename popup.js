@@ -103,7 +103,22 @@ async function count() { const data=await invoke('keywords',$('keywords').value)
 function highlightResult(result) { status(result.supported ? `Подсвечено совпадений: ${result.count}` : (result.message || 'Этот браузер не поддерживает CSS Custom Highlight API.')); }
 async function saveSearch() { await chrome.storage.local.set({searchTargetDomain:$('search-domain').value.trim(),searchQuery:$('search-query').value}); }
 async function search(engine,mode='query') { await Promise.all(['search-domain','search-query'].map(id=>globalThis.SeoInputHistory.remember(id))); await saveSearch(); const domain=$('search-domain').value.trim().replace(/^https?:\/\//i,'').split('/')[0]; const query=$('search-query').value.trim(); let text=query; if(mode==='site') {if(!domain) throw new Error('Укажите целевой домен'); text=`site:${domain}${query?' '+query:''}`;} if(mode==='url') {if(!snapshot?.url) throw new Error('Сначала откройте доступную страницу и обновите анализ'); text=`site:${snapshot.url}${query?' '+query:''}`;} if(!text) throw new Error('Введите поисковый запрос'); const url=engine==='google'?`https://www.google.com/search?q=${encodeURIComponent(text)}`:`https://yandex.ru/search/?text=${encodeURIComponent(text)}`; await chrome.tabs.create({url}); status('Поиск открыт в новой вкладке.'); }
-document.querySelectorAll('[data-tab]').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===button)); document.querySelectorAll('.panel').forEach(x=>x.classList.toggle('active',x.id===button.dataset.tab));}));
+const inspectorTabIds = new Set(['meta','keys','micro','links','search','lists','ai','settings']);
+let inspectorTabSelected = false;
+let inspectorTabSave = Promise.resolve();
+function selectInspectorTab(tabId) {
+ const selected = inspectorTabIds.has(tabId) ? tabId : 'meta';
+ document.querySelectorAll('[data-tab]').forEach(button=>button.classList.toggle('active',button.dataset.tab===selected));
+ document.querySelectorAll('.panel').forEach(panel=>panel.classList.toggle('active',panel.id===selected));
+}
+document.querySelectorAll('[data-tab]').forEach(button=>button.addEventListener('click',()=>{
+ const tabId=button.dataset.tab;
+ if(!inspectorTabIds.has(tabId)) return;
+ inspectorTabSelected=true;
+ selectInspectorTab(tabId);
+ // Serialize writes so a slower earlier click cannot replace the latest choice.
+ inspectorTabSave=inspectorTabSave.then(()=>chrome.storage.local.set({lastInspectorTab:tabId})).catch(()=>{});
+}));
 $('refresh').addEventListener('click',refresh);
 $('copy-page-url')?.addEventListener('click',async()=>{
  const url=snapshot?.url;
@@ -118,7 +133,7 @@ document.querySelectorAll('.clear').forEach(button=>button.addEventListener('cli
 $('links-domain').addEventListener('input',()=>{renderLinks();chrome.storage.local.set({linksDomain:$('links-domain').value}).catch(error=>status(error.message));});
 ['search-domain','search-query'].forEach(id=>['input','change'].forEach(event=>$(id).addEventListener(event,()=>saveSearch().catch(error=>status(error.message)))));
 for(const engine of ['google','yandex']) { $(engine).addEventListener('click',()=>action(()=>search(engine))); $(`${engine}-site`).addEventListener('click',()=>action(()=>search(engine,'site'))); $(`${engine}-url`).addEventListener('click',()=>action(()=>search(engine,'url'))); }
-(async()=>{try {const saved=await chrome.storage.local.get(['linksDomain','searchTargetDomain','searchQuery']); $('links-domain').value=saved.linksDomain || ''; $('search-domain').value=saved.searchTargetDomain || ''; $('search-query').value=saved.searchQuery || ''; await globalThis.SeoInputHistory.init();}catch(error){status(error.message);} await refresh();})();
+(async()=>{try {const saved=await chrome.storage.local.get(['linksDomain','searchTargetDomain','searchQuery','lastInspectorTab']); if(!inspectorTabSelected) selectInspectorTab(saved.lastInspectorTab); $('links-domain').value=saved.linksDomain || ''; $('search-domain').value=saved.searchTargetDomain || ''; $('search-query').value=saved.searchQuery || ''; await globalThis.SeoInputHistory.init();}catch(error){status(error.message);} await refresh();})();
 
 
 
