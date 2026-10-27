@@ -17,7 +17,7 @@ const check = (condition, label) => { assert.ok(condition, label); checks++; con
   await admin.addScriptTag({ url: `chrome-extension://${id}/report-store.js` });
   const fullUrl = 'https://www.leader.example/path?a=1&b=two#spot';
   const makeRow = (query, position, url) => ({ query, position, page: 1, positionOnPage: position, url, hostname: new URL(url).hostname, serpUrl: 'https://www.google.com/search?q=voice&start=0' });
-  const a = { id: 'report-action-a', createdAt: '2026-10-27T12:45:00.000Z', engine: 'google', limit: 30, queries: ['=SUM(1,2)', 'уроки вокала онлайн'], queryResults: [{ query: '=SUM(1,2)', status: 'partial', count: 2 }, { query: 'уроки вокала онлайн', status: 'partial', count: 1 }], rows: [makeRow('=SUM(1,2)', 1, fullUrl), makeRow('=SUM(1,2)', 2, 'http://blog.other.example/hello'), makeRow('уроки вокала онлайн', 3, 'https://leader.example/other')], status: 'partial' };
+  const a = { id: 'report-action-a', createdAt: '2026-10-27T12:45:00.000Z', engine: 'google', limit: 30, queries: ['=SUM(1,2)', 'уроки вокала онлайн'], queryResults: [{ query: '=SUM(1,2)', status: 'partial', count: 2 }, { query: 'уроки вокала онлайн', status: 'partial', count: 1 }], rows: [makeRow('=SUM(1,2)', 1, fullUrl), makeRow('=SUM(1,2)', 2, 'http://blog.other.example:8080/hello?x=1#spot'), makeRow('уроки вокала онлайн', 3, 'https://leader.example/other')], status: 'partial' };
   const b = { id: 'report-action-b', createdAt: '2026-10-26T10:05:00.000Z', engine: 'yandex', limit: 30, queries: ['сохранённый отчёт'], queryResults: [{ query: 'сохранённый отчёт', status: 'partial', count: 1 }], rows: [makeRow('сохранённый отчёт', 1, 'https://kept.example/')], status: 'partial' };
   await admin.evaluate(async reports => {
     for (const report of reports) {
@@ -37,11 +37,20 @@ const check = (condition, label) => { assert.ok(condition, label); checks++; con
   const summary = page.locator('#competitors-summary tbody tr').filter({ hasText: 'leader.example' });
   check(await summary.count() === 1 && await summary.locator('button.url-action').count() === 1 && await summary.locator('a.url-action').count() === 1, 'domain summary has one compact copy and one open icon');
   await summary.locator('button.url-action').click();
-  check(await page.evaluate(() => copiedUrl) === 'https://leader.example/', 'domain copy uses canonical homepage URL');
+  check(await page.evaluate(() => copiedUrl) === 'leader.example', 'summary icon copies domain without protocol or trailing slash');
+  check((await summary.locator('button.url-action').getAttribute('aria-label')).includes('Копировать домен: leader.example'), 'copy icon accessible name describes domain-only clipboard content');
   check((await page.locator('#action-feedback').textContent()).includes('скопирован'), 'copy success provides feedback');
   const detail = page.locator('#competitors-detail tbody tr').filter({ hasText: fullUrl });
   await detail.locator('button.url-action').first().click();
-  check(await page.evaluate(() => copiedUrl) === fullUrl, 'page URL copy preserves path query and fragment');
+  check(await page.evaluate(() => copiedUrl) === 'leader.example', 'detail copy extracts normalized domain without www path query or fragment');
+  const nested = page.locator('#competitors-detail tbody tr').filter({ hasText: 'http://blog.other.example:8080/' });
+  await nested.locator('button.url-action').first().click();
+  check(await page.evaluate(() => copiedUrl) === 'blog.other.example', 'domain copy preserves other subdomains while removing protocol port path and fragment');
+  await detail.locator('button.url-action').nth(1).click();
+  check(await page.evaluate(() => copiedUrl) === 'google.com', 'SERP copy icon also copies domain only');
+  check(await detail.locator('a.url-action').first().getAttribute('href') === fullUrl && (await nested.locator('a.url-action').first().getAttribute('href')).includes(':8080/hello?x=1#spot'), 'opening URL retains original full destination despite domain-only copying');
+  const detailCsv = await page.evaluate(rows => SeoCompetitorsView.detailCsv(rows), a.rows);
+  check(detailCsv.includes(fullUrl) && detailCsv.includes('http://blog.other.example:8080/hello?x=1#spot'), 'detail CSV continues exporting full source URLs');
   await page.evaluate(() => { window.clipboardDenied = true; });
   await detail.locator('button.url-action').first().click();
   await page.waitForFunction(() => document.querySelector('#action-feedback').textContent.includes('Не удалось'));

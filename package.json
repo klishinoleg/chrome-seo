@@ -1,6 +1,6 @@
 {
   "name": "chrome-seo-inspector",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "private": true,
   "description": "Native Manifest V3 SEO inspector; no build step",
   "scripts": {
