@@ -2,6 +2,7 @@
 (function (root) {
   'use strict';
   let connection;
+  const ERRORS = Object.freeze({ REPORT_DELETED: 'REPORT_DELETED' });
   const fail = message => { throw new Error(message); };
   const clone = value => JSON.parse(JSON.stringify(value));
   function text(value, max = 500, required = false) {
@@ -59,9 +60,32 @@
     if (!report || !['google', 'yandex'].includes(report.engine) || ![30, 100].includes(report.limit) || !['completed', 'partial', 'stopped'].includes(report.status) || !Array.isArray(report.queries) || !report.queries.length || report.queries.length > 20 || !Array.isArray(report.queryResults) || report.queryResults.length !== report.queries.length) fail('Invalid competitor report');
     const value = { id: text(report.id, 200, true), createdAt: text(report.createdAt, 40, true), engine: report.engine, limit: report.limit, queries: report.queries.map(query => text(query, 500, true)), queryResults: clone(report.queryResults), rows: rows(report.rows), status: report.status };
     if (!Number.isFinite(Date.parse(value.createdAt))) fail('Invalid report creation date');
-    return transaction('reports', 'readwrite', (store, done) => {
+    const saved = await transaction('reports', 'readwrite', (store, done) => {
       const request = store.get(value.id);
       request.onsuccess = () => { if (!request.result) store.add(value); done(request.result || value); };
+    });
+    if (saved.deleted) throw Object.assign(new Error('Competitor report was deleted'), { code: ERRORS.REPORT_DELETED });
+    return saved;
+  }
+  async function deleteReport(id) {
+    const db = await database();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(['reports', 'drafts'], 'readwrite');
+      let missing = false;
+      const reports = tx.objectStore('reports');
+      const request = reports.get(id);
+      request.onsuccess = () => {
+        if (!request.result || request.result.deleted) { missing = true; tx.abort(); return; }
+        // Keep only an id marker so interrupted finalization cannot restore the report.
+        reports.put({ id, deleted: true });
+        const cursor = tx.objectStore('drafts').index('runId').openCursor(id);
+        cursor.onsuccess = () => {
+          const chunk = cursor.result;
+          if (chunk) { chunk.delete(); chunk.continue(); }
+        };
+      };
+      tx.oncomplete = () => resolve({ deleted: true, reportId: id });
+      tx.onerror = tx.onabort = () => reject(new Error(missing ? 'Competitor report not found' : 'Cannot delete competitor report'));
     });
   }
   const trusted = sender => Boolean(sender && sender.id === chrome.runtime.id && typeof sender.url === 'string' && sender.url.startsWith(chrome.runtime.getURL('')) && (!sender.tab || typeof sender.tab.url === 'string' && sender.tab.url.startsWith(chrome.runtime.getURL(''))));
@@ -69,15 +93,16 @@
     if (!trusted(sender)) fail('Competitor reports are available only to extension pages');
     if (message.action === 'list') {
       const reports = await transaction('reports', 'readonly', (store, done) => { const request = store.getAll(); request.onsuccess = () => done(request.result); });
-      return { reports: reports.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(({ rows: storedRows, ...metadata }) => ({ ...metadata, rowCount: storedRows.length })) };
+      return { reports: reports.filter(report => !report.deleted).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(({ rows: storedRows, ...metadata }) => ({ ...metadata, rowCount: storedRows.length })) };
     }
     if (message.action === 'get') {
       const id = text(message.reportId, 200, true);
       const report = await transaction('reports', 'readonly', (store, done) => { const request = store.get(id); request.onsuccess = () => done(request.result); });
-      if (!report) fail('Competitor report not found');
+      if (!report || report.deleted) fail('Competitor report not found');
       return { report };
     }
+    if (message.action === 'delete') return deleteReport(text(message.reportId, 200, true));
     fail('Unknown competitor report action');
   }
-  root.SeoCompetitors = Object.freeze({ appendDraft, readDraft, saveReport, dispatch });
+  root.SeoCompetitors = Object.freeze({ ERRORS, appendDraft, readDraft, saveReport, dispatch });
 })(globalThis);

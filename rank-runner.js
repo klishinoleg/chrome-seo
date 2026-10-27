@@ -94,7 +94,13 @@
       return { ...item, count, status: incomplete || item.status === 'pending' && count ? 'partial' : item.status, reason: incomplete ? 'Interrupted before all requested rows were durably stored' : item.reason };
     });
     const reportStatus = state.reportStatus === 'completed' && !queryResults.every(item => item.status === 'completed' && item.count >= state.limit) ? 'partial' : state.reportStatus;
-    const report = await SeoCompetitors.saveReport({ id: state.reportId, createdAt: state.reportCreatedAt, engine: state.engine, limit: state.limit, queries: state.queries, queryResults, rows, status: reportStatus });
+    let report;
+    try {
+      report = await SeoCompetitors.saveReport({ id: state.reportId, createdAt: state.reportCreatedAt, engine: state.engine, limit: state.limit, queries: state.queries, queryResults, rows, status: reportStatus });
+    } catch (error) {
+      if (error.code !== SeoCompetitors.ERRORS.REPORT_DELETED) throw error;
+      return write({ ...state, reportPending: false, reportId: null, reportOpened: false, reportCreatedAt: null, reason: 'Saved report was deleted' });
+    }
     return write({ ...state, queryResults: report.queryResults, resultsSeen: report.queryResults[state.queryIndex].count, reportStatus: report.status, reportPending: false });
   }
   async function finishCollect(state, status, reportStatus, reason) {

@@ -1,0 +1,132 @@
+/* Report row controls and selected-report deletion with actual extension/IndexedDB. */
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+let browser, checks = 0;
+const check = (condition, label) => { assert.ok(condition, label); checks++; console.log(`PASS ${label}`); };
+(async () => {
+  const installed = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
+  browser = await chromium.launchPersistentContext('', { executablePath: process.env.CHROME_PATH || (fs.existsSync(installed) ? installed : undefined), headless: true, timezoneId: 'Europe/Moscow', viewport: { width: 1400, height: 900 }, args: ['--enable-unsafe-extension-debugging'], ignoreDefaultArgs: ['--disable-extensions'] });
+  const cdp = await browser.browser().newBrowserCDPSession();
+  const { id } = await cdp.send('Extensions.loadUnpacked', { path: path.resolve(__dirname, '..') });
+  let externalRequests = 0;
+  for (const host of ['leader.example', 'www.leader.example', 'keywordseverywhere.com', 'www.google.com']) await browser.route(`https://${host}/**`, route => { if (route.request().isNavigationRequest()) externalRequests++; return route.fulfill({ contentType: 'text/html', body: '<h1>Explicit destination fixture</h1>' }); });
+  const admin = await browser.newPage();
+  await admin.goto(`chrome-extension://${id}/library.html`);
+  await admin.addScriptTag({ url: `chrome-extension://${id}/report-store.js` });
+  const fullUrl = 'https://www.leader.example/path?a=1&b=two#spot';
+  const makeRow = (query, position, url) => ({ query, position, page: 1, positionOnPage: position, url, hostname: new URL(url).hostname, serpUrl: 'https://www.google.com/search?q=voice&start=0' });
+  const a = { id: 'report-action-a', createdAt: '2026-10-27T12:45:00.000Z', engine: 'google', limit: 30, queries: ['=SUM(1,2)', 'уроки вокала онлайн'], queryResults: [{ query: '=SUM(1,2)', status: 'partial', count: 2 }, { query: 'уроки вокала онлайн', status: 'partial', count: 1 }], rows: [makeRow('=SUM(1,2)', 1, fullUrl), makeRow('=SUM(1,2)', 2, 'http://blog.other.example/hello'), makeRow('уроки вокала онлайн', 3, 'https://leader.example/other')], status: 'partial' };
+  const b = { id: 'report-action-b', createdAt: '2026-10-26T10:05:00.000Z', engine: 'yandex', limit: 30, queries: ['сохранённый отчёт'], queryResults: [{ query: 'сохранённый отчёт', status: 'partial', count: 1 }], rows: [makeRow('сохранённый отчёт', 1, 'https://kept.example/')], status: 'partial' };
+  await admin.evaluate(async reports => {
+    for (const report of reports) {
+      await SeoCompetitors.saveReport(report);
+      await SeoCompetitors.appendDraft({ id: `${report.id}:0:1`, runId: report.id, queryIndex: 0, pageIndex: 1, rows: report.rows });
+    }
+  }, [a, b]);
+  const rpc = (action, values = {}) => admin.evaluate(message => chrome.runtime.sendMessage(message), { type: 'seoCompetitors', action, ...values });
+  const page = await browser.newPage(), errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(() => { navigator.clipboard.writeText = async value => { if (window.clipboardDenied) throw new Error('clipboard denied'); window.copiedUrl = value; }; });
+  await page.goto(`chrome-extension://${id}/competitors.html?report=${a.id}`);
+  await page.locator('#competitors-summary tbody tr').first().waitFor();
+  const title = await page.locator('#report-select option:checked').textContent();
+  check(title.includes('27.10.2026 15:45') && title.includes('=SUM(1,2)') && /\(2\s+запрос/.test(title) && !title.includes('T12:'), 'report name shows local readable time first query and query count');
+  check(externalRequests === 0, 'opening report makes no external checker or site requests');
+  const summary = page.locator('#competitors-summary tbody tr').filter({ hasText: 'leader.example' });
+  check(await summary.count() === 1 && await summary.locator('button.url-action').count() === 1 && await summary.locator('a.url-action').count() === 1, 'domain summary has one compact copy and one open icon');
+  await summary.locator('button.url-action').click();
+  check(await page.evaluate(() => copiedUrl) === 'https://leader.example/', 'domain copy uses canonical homepage URL');
+  check((await page.locator('#action-feedback').textContent()).includes('скопирован'), 'copy success provides feedback');
+  const detail = page.locator('#competitors-detail tbody tr').filter({ hasText: fullUrl });
+  await detail.locator('button.url-action').first().click();
+  check(await page.evaluate(() => copiedUrl) === fullUrl, 'page URL copy preserves path query and fragment');
+  await page.evaluate(() => { window.clipboardDenied = true; });
+  await detail.locator('button.url-action').first().click();
+  await page.waitForFunction(() => document.querySelector('#action-feedback').textContent.includes('Не удалось'));
+  check((await page.locator('#action-feedback').textContent()).includes('Не удалось'), 'clipboard denial never reports success');
+  await page.evaluate(() => { window.clipboardDenied = false; });
+  const openIcon = summary.locator('a.url-action');
+  check(await openIcon.getAttribute('target') === '_blank' && /noopener/.test(await openIcon.getAttribute('rel')) && /noreferrer/.test(await openIcon.getAttribute('rel')), 'open icon uses safe new-tab attributes');
+  const siteTabEvent = browser.waitForEvent('page');
+  await openIcon.click();
+  const site = await siteTabEvent; await site.waitForLoadState();
+  check(site.url() === 'https://leader.example/', 'open-site icon opens correct domain homepage');
+  await site.close();
+  const dimensions = await summary.locator('.url-actions').evaluate(node => {
+    const button = node.querySelector('button'), label = node.querySelector('span');
+    return { width: button.getBoundingClientRect().width, height: button.getBoundingClientRect().height, labelSize: parseFloat(getComputedStyle(label).fontSize), cellSize: parseFloat(getComputedStyle(node.closest('td')).fontSize), svg: button.querySelector('svg').getBoundingClientRect().width };
+  });
+  check(dimensions.width <= 22 && dimensions.height <= 22 && dimensions.svg <= 12 && dimensions.labelSize > dimensions.cellSize, 'icons remain small and URL text larger than table text');
+  const checker = page.getByRole('link', { name: 'Проверить ссылки', exact: true });
+  const checkerBox = await checker.boundingBox(), csvBox = await page.locator('#export-summary').boundingBox();
+  check(Math.abs(checkerBox.y + checkerBox.height / 2 - csvBox.y - csvBox.height / 2) < 5, 'backlink checker link sits beside summary CSV');
+  const checkerTabEvent = browser.waitForEvent('page');
+  await checker.click(); const checkerTab = await checkerTabEvent; await checkerTab.waitForLoadState();
+  check(checkerTab.url() === 'https://keywordseverywhere.com/tools/backlinks-checker/', 'checker opens exact requested URL only after click');
+  await checkerTab.close();
+  const downloadEvent = page.waitForEvent('download'); await page.locator('#export-summary').click();
+  const csv = fs.readFileSync(await (await downloadEvent).path(), 'utf8');
+  check(csv.includes('leader.example') && csv.includes("'=SUM(1,2)") && !/Копировать|Открыть|скопирован/.test(csv), 'summary CSV remains formula-safe data without icon or feedback text');
+  await page.locator('#domain-filter').fill('leader.example');
+  check(await page.locator('#competitors-summary tbody tr').count() === 1 && await page.locator('#competitors-detail tbody tr').count() === 2, 'filtering still controls summary details and row actions');
+  await page.locator('#domain-filter').fill('');
+  const evidence = 'C:/Users/klish/.codex/visualizations/2026/10/22/01a1638b-a337-75d1-b3e3-680cfe652ad8';
+  fs.mkdirSync(evidence, { recursive: true });
+  await summary.locator('button.url-action').click();
+  await page.screenshot({ path: path.join(evidence, 'chrome-seo-report-actions.png') });
+  page.once('dialog', dialog => dialog.dismiss()); await page.locator('#delete-report').click();
+  check((await rpc('list')).result.reports.length === 2 && await page.locator('#report-select').inputValue() === a.id, 'cancel deletion keeps selected report intact');
+  await page.evaluate(() => {
+    window.originalMessage = chrome.runtime.sendMessage.bind(chrome.runtime);
+    chrome.runtime.sendMessage = message => message.type === 'seoCompetitors' && message.action === 'delete' ? Promise.resolve({ ok: false, error: 'fixture delete failure' }) : window.originalMessage(message);
+  });
+  page.once('dialog', dialog => dialog.accept()); await page.locator('#delete-report').click();
+  await page.waitForFunction(() => document.querySelector('#action-feedback').textContent.includes('Не удалось'));
+  check((await rpc('list')).result.reports.length === 2 && await page.locator('#delete-report').isEnabled(), 'failed deletion preserves data and re-enables controls');
+  await page.evaluate(() => { chrome.runtime.sendMessage = window.originalMessage; });
+  const search = await browser.newPage(); await search.goto('https://www.google.com/search?q=delete-privacy-probe');
+  const denied = await admin.evaluate(async () => {
+    const tab = (await chrome.tabs.query({})).find(tab => tab.url?.includes('delete-privacy-probe'));
+    return (await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => chrome.runtime.sendMessage({ type: 'seoCompetitors', action: 'delete', reportId: 'report-action-a' }) }))[0].result;
+  });
+  check(denied?.ok === false && (await rpc('list')).result.reports.length === 2, 'search content script cannot delete private reports');
+  await search.close();
+  check(!(await rpc('delete', { reportId: '' })).ok && (await rpc('list')).result.reports.length === 2, 'invalid report ID cannot delete any report');
+  page.once('dialog', dialog => dialog.accept()); await page.locator('#delete-report').click();
+  await page.waitForFunction(id => document.querySelector('#report-select').value === id && document.querySelector('#competitors-summary tbody tr'), b.id);
+  const remaining = (await rpc('list')).result.reports;
+  check(remaining.length === 1 && remaining[0].id === b.id && !(await rpc('get', { reportId: a.id })).ok, 'deleting selected report preserves another report and selects it');
+  const drafts = await admin.evaluate(async ids => Promise.all(ids.map(id => SeoCompetitors.readDraft(id))), [a.id, b.id]);
+  check(drafts[0].length === 0 && drafts[1].length === 1, 'deletion clears only matching report draft chunks');
+  const lateSave = await admin.evaluate(async report => {
+    try { await SeoCompetitors.saveReport(report); return { ok: true }; }
+    catch (error) { return { ok: false, code: error.code }; }
+  }, a);
+  check(!lateSave.ok && (await rpc('list')).result.reports.length === 1, 'late finalization cannot recreate a deleted report');
+  const recovered = await admin.evaluate(async report => {
+    await chrome.storage.session.set({ seoRankRunState: { id: report.id, mode: 'collect', engine: report.engine, queries: report.queries, query: report.queries[0], queryIndex: 0, queryResults: report.queryResults, limit: report.limit, status: 'completed', resultsSeen: 2, reportId: report.id, reportCreatedAt: report.createdAt, reportPending: true, reportStatus: 'partial', reportOpened: false, tabId: 987654, expectedUrl: 'https://www.google.com/search?q=old' } });
+    return chrome.runtime.sendMessage({ type: 'seoRankRun', action: 'getStatus' });
+  }, a);
+  check(recovered.ok && !recovered.state.reportId && (await rpc('list')).result.reports.length === 1, 'interrupted finalization acknowledges deletion without blocking status or restoring data');
+  const fresh = await browser.newPage(); await fresh.goto('https://www.google.com/search?q=new-run-after-delete');
+  const started = await admin.evaluate(async () => {
+    const tab = (await chrome.tabs.query({})).find(tab => tab.url?.includes('new-run-after-delete'));
+    return (await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => chrome.runtime.sendMessage({ type: 'seoRankRun', action: 'start', query: 'после удаления', targetDomain: 'absent.example' }) }))[0].result;
+  });
+  check(started.ok && started.state.id !== a.id, 'new search run can start after deleted pending report recovery');
+  await admin.evaluate(runId => chrome.runtime.sendMessage({ type: 'seoRankRun', action: 'stop', runId }), started.state.id);
+  await fresh.close();
+  const worker = (await cdp.send('Target.getTargets')).targetInfos.find(target => target.type === 'service_worker' && target.url === `chrome-extension://${id}/background.js`);
+  await cdp.send('Target.closeTarget', { targetId: worker.targetId });
+  await page.reload();
+  await page.waitForFunction(id => document.querySelector('#report-select').value === id && document.querySelector('#competitors-summary tbody tr'), b.id);
+  check((await rpc('list')).result.reports.length === 1, 'deleted report stays absent after actual worker restart and page reload');
+  page.once('dialog', dialog => dialog.accept()); await page.locator('#delete-report').click();
+  await page.waitForFunction(() => document.querySelector('#status').textContent.includes('пока нет'));
+  check((await rpc('list')).result.reports.length === 0 && await page.locator('#competitors-summary tbody tr').count() === 0 && await page.locator('#competitors-detail tbody tr').count() === 0, 'deleting last report clears tables and saved report list');
+  check(await page.locator('#delete-report').isDisabled() && await page.locator('#export-summary').isDisabled() && await page.locator('#export-detail').isDisabled(), 'empty report view disables deletion and CSV exports');
+  check(errors.length === 0, 'report copy open filters exports and deletion have no uncaught exceptions');
+  console.log(`PASS ${checks} report actions integration checks (clipboard/provider destinations mocked)`);
+})().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => { await browser?.close(); });
