@@ -1,5 +1,5 @@
 'use strict';
-importScripts('lists-store.js', 'deepseek.js', 'openpagerank.js');
+importScripts('lists-store.js', 'deepseek.js', 'openpagerank.js', 'rank-runner.js');
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.type !== 'seoLists') return false;
   SeoListsStore.dispatch(message).then(
@@ -22,6 +22,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   SeoOpenPageRank.dispatch(message, sender).then(
     result => sendResponse({ok:true,result}),
     error => sendResponse({ok:false,error:error.message || 'OPR недоступен.'})
+  );
+  return true;
+});
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || message.type !== 'seoRankRun') return false;
+  SeoRankRunner.dispatch(message, sender).then(
+    state => sendResponse({ ok: true, state }),
+    error => sendResponse({ ok: false, error: error.message || 'Rank run failed' })
   );
   return true;
 });

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SEO / инспектор",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "META, ключевые слова, микроразметка и внешние ссылки текущей страницы.",
   "permissions": [
     "activeTab",
@@ -21,12 +21,17 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.google.com/search*",
-        "https://www.google.ru/search*",
-        "https://yandex.ru/search*",
-        "https://yandex.com/search*"
+        "https://google.com/*",
+        "https://www.google.com/*",
+        "https://google.ru/*",
+        "https://www.google.ru/*",
+        "https://yandex.com/*",
+        "https://www.yandex.com/*",
+        "https://yandex.ru/*",
+        "https://www.yandex.ru/*"
       ],
       "js": [
+        "serp-parser.js",
         "serp.js"
       ],
       "run_at": "document_idle"
@@ -38,6 +43,14 @@
   "host_permissions": [
     "https://api.deepseek.com/*",
     "https://openpagerank.keywordseverywhere.com/*",
-    "https://api.keywordseverywhere.com/*"
+    "https://api.keywordseverywhere.com/*",
+    "https://google.com/*",
+    "https://www.google.com/*",
+    "https://google.ru/*",
+    "https://www.google.ru/*",
+    "https://yandex.com/*",
+    "https://www.yandex.com/*",
+    "https://yandex.ru/*",
+    "https://www.yandex.ru/*"
   ]
 }

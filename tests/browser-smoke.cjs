@@ -130,7 +130,7 @@ const check = (condition, description) => { assert.ok(condition, description); c
   await serp.waitForFunction(() => document.querySelectorAll('[data-seo-lens-result]').length === 1);
   check(await serp.locator('a[data-seo-lens-result]').textContent() === 'Other', 'SERP reacts to stored target domain changes');
   await serp.evaluate(() => window.__changeStorage({ searchTargetDomain: { newValue: '' } }, 'local'));
-  check(await serp.locator('[data-seo-lens-result]').count() === 0 && await serp.locator('aside[data-seo-lens-search-ui]').count() === 0, 'empty target removes SERP highlights and badge');
+  check(await serp.locator('[data-seo-lens-result]').count() === 0 && await serp.locator('aside[data-seo-lens-search-ui]').count() === 1, 'empty target clears highlights while keeping editable rank controls');
   check(errors.length === 0, 'popup and engine have no JS exceptions');
   console.log(`PASS ${checks} integration checks; screenshots: ${artifacts}`);
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => { await browser?.close(); server.close(); });
