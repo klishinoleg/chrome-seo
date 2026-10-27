@@ -58,7 +58,7 @@
   }
   async function saveReport(report) {
     if (!report || !['google', 'yandex'].includes(report.engine) || ![30, 100].includes(report.limit) || !['completed', 'partial', 'stopped'].includes(report.status) || !Array.isArray(report.queries) || !report.queries.length || report.queries.length > 20 || !Array.isArray(report.queryResults) || report.queryResults.length !== report.queries.length) fail('Invalid competitor report');
-    const value = { id: text(report.id, 200, true), createdAt: text(report.createdAt, 40, true), engine: report.engine, limit: report.limit, queries: report.queries.map(query => text(query, 500, true)), queryResults: clone(report.queryResults), rows: rows(report.rows), status: report.status };
+    const value = { id: text(report.id, 200, true), createdAt: text(report.createdAt, 40, true), engine: report.engine, limit: report.limit, queries: report.queries.map(query => text(query, 500, true)), queryResults: clone(report.queryResults), rows: rows(report.rows), status: report.status, reviewedHosts: [] };
     if (!Number.isFinite(Date.parse(value.createdAt))) fail('Invalid report creation date');
     const saved = await transaction('reports', 'readwrite', (store, done) => {
       const request = store.get(value.id);
@@ -88,6 +88,39 @@
       tx.onerror = tx.onabort = () => reject(new Error(missing ? 'Competitor report not found' : 'Cannot delete competitor report'));
     });
   }
+  function canonicalHost(value) {
+    text(value, 253, true);
+    if (!/^[a-z0-9.\-\[\]:]+$/i.test(value)) fail('Invalid competitor hostname');
+    let url; try { url = new URL(`https://${value}/`); } catch { fail('Invalid competitor hostname'); }
+    if (url.hostname.toLowerCase() !== value.toLowerCase() || url.port || url.username || url.password || url.pathname !== '/' || url.search || url.hash) fail('Invalid competitor hostname');
+    const host = url.hostname.toLowerCase().replace(/\.+$/, '').replace(/^www\./, '');
+    if (!host) fail('Invalid competitor hostname');
+    return host;
+  }
+  async function setReviewed(id, hostValue, reviewed) {
+    const hostname = canonicalHost(hostValue);
+    if (typeof reviewed !== 'boolean') fail('Invalid reviewed state');
+    const db = await database();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('reports', 'readwrite');
+      const store = tx.objectStore('reports');
+      let reason;
+      const request = store.get(id);
+      request.onsuccess = () => {
+        const report = request.result;
+        if (!report || report.deleted) { reason = 'Competitor report not found'; tx.abort(); return; }
+        const member = report.rows.some(row => {
+          try { const url = new URL(row.url); return ['http:', 'https:'].includes(url.protocol) && canonicalHost(url.hostname) === hostname; } catch { return false; }
+        });
+        if (!member) { reason = 'Hostname is not present in competitor report'; tx.abort(); return; }
+        const hosts = new Set(Array.isArray(report.reviewedHosts) ? report.reviewedHosts : []);
+        if (reviewed) hosts.add(hostname); else hosts.delete(hostname);
+        store.put({ ...report, reviewedHosts: [...hosts].sort() });
+      };
+      tx.oncomplete = () => resolve({ reportId: id, hostname, reviewed });
+      tx.onerror = tx.onabort = () => reject(new Error(reason || 'Cannot persist reviewed state'));
+    });
+  }
   const trusted = sender => Boolean(sender && sender.id === chrome.runtime.id && typeof sender.url === 'string' && sender.url.startsWith(chrome.runtime.getURL('')) && (!sender.tab || typeof sender.tab.url === 'string' && sender.tab.url.startsWith(chrome.runtime.getURL(''))));
   async function dispatch(message, sender) {
     if (!trusted(sender)) fail('Competitor reports are available only to extension pages');
@@ -99,8 +132,9 @@
       const id = text(message.reportId, 200, true);
       const report = await transaction('reports', 'readonly', (store, done) => { const request = store.get(id); request.onsuccess = () => done(request.result); });
       if (!report || report.deleted) fail('Competitor report not found');
-      return { report };
+      return { report: { ...report, reviewedHosts: Array.isArray(report.reviewedHosts) ? report.reviewedHosts : [] } };
     }
+    if (message.action === 'setReviewed') return setReviewed(text(message.reportId, 200, true), message.hostname, message.reviewed);
     if (message.action === 'delete') return deleteReport(text(message.reportId, 200, true));
     fail('Unknown competitor report action');
   }
