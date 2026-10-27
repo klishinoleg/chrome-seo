@@ -138,11 +138,20 @@
   function highlightLinks(domainFilter) {
     if (!setup()) return { supported: false, count: 0, message: 'CSS Custom Highlight API недоступен' };
     const groups = [[], []];
+    let firstRendered;
     for (const entry of links().entries) {
       if (!entry.domain.toLowerCase().includes(String(domainFilter || '').toLowerCase()) || !visible(entry.anchor)) continue;
       const range = document.createRange(); range.selectNodeContents(entry.anchor); groups[Number(entry.restricted)].push(range);
+      if (!firstRendered && [...entry.anchor.getClientRects()].some(rect => rect.width > 0 && rect.height > 0)) {
+        let transparent = false;
+        for (let el = entry.anchor; el; el = el.parentElement) {
+          if (Number(getComputedStyle(el).opacity) === 0) { transparent = true; break; }
+        }
+        if (!transparent) firstRendered = entry.anchor;
+      }
     }
     register('chrome-seo-link-open', groups[0], '#80ed99'); register('chrome-seo-link-restricted', groups[1], '#ff8c94');
+    firstRendered?.scrollIntoView({ block: 'center', inline: 'nearest' });
     return { supported: true, count: groups[0].length + groups[1].length };
   }
   globalThis.__chromeSeo = Object.freeze({ analyze, keywords, highlightKeywords, highlightLinks, clearHighlights });

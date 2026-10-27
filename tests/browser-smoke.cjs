@@ -95,9 +95,33 @@ const check = (condition, description) => { assert.ok(condition, description); c
   await popup.locator('#links-domain').fill('outside.test');
   await popup.waitForFunction(() => document.querySelector('#link-results tbody').children.length === 2);
   check(await popup.locator('#link-results .bad').count() === 2, 'LINKS domain filtering and restricted styling');
+  const sourceUrl = fixture.url();
+  await fixture.evaluate(() => {
+    const matches = document.querySelectorAll('a[href="https://outside.test/a"]');
+    matches[0].id = 'first-scroll-match';
+    matches[0].parentElement.style.marginTop = '2200px';
+    matches[1].style.cssText = 'display:block;margin-top:1200px';
+    const hidden = document.createElement('a'); hidden.href = 'https://outside.test/hidden'; hidden.hidden = true; hidden.textContent = 'Hidden';
+    const other = document.createElement('a'); other.href = 'https://unmatched.test/'; other.textContent = 'Unmatched';
+    document.body.prepend(hidden, other);
+    const footer = document.createElement('div'); footer.style.height = '2000px'; document.body.append(footer);
+    window.scrollTo(0, 0);
+  });
   await popup.locator('#highlight-links').click();
   await popup.waitForFunction(() => document.querySelector('#status').textContent.includes('совпадений'));
   check(await fixture.evaluate(() => CSS.highlights.has('chrome-seo-link-restricted')), 'external links highlighted on source page');
+  await fixture.waitForFunction(() => {
+    const rect = document.querySelector('#first-scroll-match').getBoundingClientRect();
+    return scrollY > 1000 && Math.abs(rect.top + rect.height / 2 - innerHeight / 2) < 40;
+  });
+  check(true, 'Highlight links scrolls source page to first visible matching link rather than last or hidden link');
+  check(fixture.url() === sourceUrl, 'highlight scroll keeps current source URL without opening destination');
+  const scrollBeforeMiss = await fixture.evaluate(() => scrollY);
+  await popup.locator('#links-domain').fill('missing-domain.test');
+  await popup.locator('#highlight-links').click();
+  await popup.waitForFunction(() => document.querySelector('#status').textContent.includes('Подсвечено совпадений: 0'));
+  check(await fixture.evaluate(() => scrollY) === scrollBeforeMiss, 'no matching links leaves source scroll position unchanged');
+  await popup.locator('#links-domain').fill('outside.test');
   await popup.screenshot({ path: path.join(artifacts, 'links.png') });
   await popup.locator('[data-tab="search"]').click();
   await popup.locator('#search-domain').fill('outside.test');
