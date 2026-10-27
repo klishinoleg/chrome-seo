@@ -18,7 +18,7 @@
   const query = url.searchParams.get(engine === 'google' ? 'q' : 'text') || '';
   const offset = Number(url.searchParams.get(engine === 'google' ? 'start' : 'p') || 0);
   const page = engine === 'google' ? Math.floor(offset / 10) + 1 : offset + 1;
-  const base = {kind:'unknown',url:url.href,engine,query,page,results:[],nextUrl:null};
+  const base = {kind:'unknown',url:url.href,engine,query,page,results:[],nextUrl:null,nextKind:'none'};
   if (!engine) return base;
   if (/\/sorry(?:\/|$)|\/showcaptcha|\/captcha/.test(url.pathname) || document.querySelector('#captcha-form, .CheckboxCaptcha, .SmartCaptcha, [id*="captcha"], iframe[src*="recaptcha"]')) return {...base,kind:'captcha'};
   if (document.querySelector('form[action*="consent"], #consent-bump, .consent-bump') || /consent/.test(url.pathname)) return {...base,kind:'consent'};
@@ -40,10 +40,11 @@
   base.kind = 'results';
   const next = document.querySelector(engine === 'google' ? 'a#pnnext' : 'a.Pager-Item_type_next, a.pager__item_kind_next');
   if (next) {
+   base.nextKind = 'invalid';
    try {
     const target = new URL(next.href, url);
     const nextOffset = Number(target.searchParams.get(engine === 'google' ? 'start' : 'p'));
-    if (target.protocol === 'https:' && engineOf(target.hostname) === engine && /^\/search\/?$/.test(target.pathname) && target.searchParams.get(engine === 'google' ? 'q' : 'text') === query && Number.isInteger(nextOffset) && nextOffset > offset) base.nextUrl = target.href;
+    if (target.protocol === 'https:' && engineOf(target.hostname) === engine && /^\/search\/?$/.test(target.pathname) && target.searchParams.get(engine === 'google' ? 'q' : 'text') === query && Number.isInteger(nextOffset) && nextOffset > offset) { base.nextUrl = target.href; base.nextKind = 'valid'; }
    } catch { /* Unknown links never become navigation instructions. */ }
   }
   return base;

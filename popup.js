@@ -194,3 +194,5 @@ chrome.tabs.onUpdated?.addListener((tabId,change)=>{
  if(change.url || change.status==='loading') {++analysisGeneration;invalidateMembershipPage();}
  if(change.status==='complete') void refresh();
 });
+
+$('open-competitors').addEventListener('click',()=>chrome.tabs.create({url:chrome.runtime.getURL('competitors.html')}));

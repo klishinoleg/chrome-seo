@@ -117,7 +117,9 @@ const check = (condition, description) => { assert.ok(condition, description); c
   const serp = await mockContext.newPage();
   await serp.route('https://www.google.com/**', route => route.fulfill({ contentType: 'text/html', body: '<html><body><a href="https://outside.test/a">Match</a><a href="https://sub.outside.test/b">Subdomain</a><a href="https://outside.test.evil/a">Wrong host</a><a href="https://www.google.com/url?q=https%3A%2F%2Foutside.test%2Fredirect">Redirect</a><a href="https://other.test">Other</a></body></html>' }));
   await serp.addInitScript(() => {
-    window.chrome = { storage: { local: { get: async () => ({ searchTargetDomain: 'outside.test' }) }, onChanged: { addListener: callback => { window.__changeStorage = callback; } } } };
+    const storageListeners = [];
+    window.__changeStorage = (...args) => storageListeners.forEach(callback => callback(...args));
+    window.chrome = { storage: { local: { get: async () => ({ searchTargetDomain: 'outside.test' }) }, onChanged: { addListener: callback => storageListeners.push(callback) } } };
   });
   await serp.goto('https://www.google.com/search?q=test');
   await serp.addScriptTag({ path: path.join(root, 'serp.js') });

@@ -62,6 +62,10 @@ const escape = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', 
     }
     throw new Error(`Rank state timeout: ${JSON.stringify(await state())}`);
   };
+  const expand = async () => {
+    await page.locator('#rank-toggle').waitFor();
+    if (await page.locator('#rank-toggle').getAttribute('aria-expanded') === 'false') await page.locator('#rank-toggle').click();
+  };
   const begin = async (engine, query, scenario, warmupPage = 1) => {
     scenarios.set(query, scenario);
     const previous = await state();
@@ -70,6 +74,7 @@ const escape = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', 
       assert.ok(stopped.ok, stopped.error);
     }
     await page.goto(searchUrl(engine, 'warmup', warmupPage));
+    await expand();
     await page.locator('#rank-start').waitFor();
     await page.locator('#rank-domain').fill('target.example');
     await page.locator('#rank-query').fill(query);
@@ -78,6 +83,7 @@ const escape = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', 
     return before;
   };
   await page.goto(searchUrl('google', 'warmup'));
+  await expand();
   await page.locator('#rank-start').waitFor();
   check((await state()) === null, 'SERP badge does not start a rank run on opening');
   const idleVisits = visits.length;

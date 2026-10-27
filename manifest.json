@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SEO / инспектор",
-  "version": "0.1.5",
+  "version": "0.1.7",
   "description": "META, ключевые слова, микроразметка и внешние ссылки текущей страницы.",
   "permissions": [
     "activeTab",
@@ -32,7 +32,17 @@
       ],
       "js": [
         "serp-parser.js",
-        "serp.js"
+        "serp.js",
+        "query-picker.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://wordstat.yandex.ru/*"
+      ],
+      "js": [
+        "query-picker.js"
       ],
       "run_at": "document_idle"
     }
@@ -51,6 +61,7 @@
     "https://yandex.com/*",
     "https://www.yandex.com/*",
     "https://yandex.ru/*",
-    "https://www.yandex.ru/*"
+    "https://www.yandex.ru/*",
+    "https://wordstat.yandex.ru/*"
   ]
 }
