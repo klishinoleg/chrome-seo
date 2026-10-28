@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SEO / инспектор",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "META, ключевые слова, микроразметка и внешние ссылки текущей страницы.",
   "permissions": [
     "activeTab",
@@ -31,6 +31,7 @@
         "https://www.yandex.ru/*"
       ],
       "js": [
+        "serp-url.js",
         "serp-parser.js",
         "serp.js",
         "query-picker.js"

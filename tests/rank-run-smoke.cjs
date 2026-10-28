@@ -48,7 +48,7 @@ const escape = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', 
     await route.fulfill({ contentType: 'text/html; charset=utf-8', body: fixture(engine, query, page, scenario) });
   });
   const page = await browser.newPage();
-  page.on('pageerror', error => errors.push(error.message));
+  page.on('pageerror', error => { errors.push(error.message); console.error('SERP pageerror', error.stack); });
   const state = async () => {
     const response = await admin.evaluate(() => chrome.runtime.sendMessage({ type: 'seoRankRun', action: 'getStatus' }));
     assert.ok(response?.ok, response?.error); return response.state;
@@ -155,7 +155,7 @@ const escape = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', 
   await page.locator('#rank-close').click();
   current = await waitState(state => state?.status === 'stopped');
   check(true, 'closing the badge stops active checking');
-  check(errors.length === 0, 'rank controls and cross-page progress have no uncaught exceptions');
+  check(errors.length === 0, `rank controls and cross-page progress have no uncaught exceptions: ${JSON.stringify(errors)}`);
   await page.goto(searchUrl('google', 'google found', 2));
   await page.screenshot({ path: path.join(evidence, 'chrome-seo-rank-run.png') });
   console.log(`PASS ${checks} SERP rank-run integration checks (search pages mocked)`);

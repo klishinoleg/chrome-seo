@@ -1,5 +1,5 @@
 'use strict';
-importScripts('lists-store.js', 'deepseek.js', 'openpagerank.js', 'report-store.js', 'rank-runner.js', 'query-queue.js');
+importScripts('lists-store.js', 'deepseek.js', 'openpagerank.js', 'report-store.js', 'serp-url.js', 'rank-runner.js', 'query-queue.js');
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.type !== 'seoLists') return false;
   SeoListsStore.dispatch(message).then(

@@ -28,7 +28,7 @@
   controls.status.textContent=found?`Найдено: позиция ${found.position} · страница ${found.page} · место ${found.positionOnPage}`:`${statuses[state.status] || 'Состояние проверки'}${reason?' · '+reason:''} · страница ${state.currentPage || 1} · просмотрено ${state.pagesVisited || 0} стр., ${state.resultsSeen || 0} результатов`;
  }
  function expectedDocument() {
-  if(state?.expectedUrl===location.href)return true;
+  if(state?.expectedUrl===location.href || /^(?:www\.)?yandex\.(?:ru|com)$/.test(location.hostname) && globalThis.SeoSerpUrl.expectedMatches(location.href,state?.expectedUrl))return true;
   const kind=globalThis.SeoSerpParser?.snapshot().kind;return kind==='captcha'||kind==='consent';
  }
  function queueSnapshot() {

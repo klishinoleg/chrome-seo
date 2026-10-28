@@ -71,7 +71,7 @@
     let tab;
     try { tab = await chrome.tabs.get(state.tabId); } catch { return state; }
     const sourceUrl = canonical(tab.url);
-    if (!explicit && sourceUrl !== state.expectedUrl) return state;
+    if (!explicit && !SeoSerpUrl.expectedMatches(sourceUrl, state.expectedUrl)) return state;
     const latest = await read();
     if (!latest || latest.id !== state.id || !latest.reportId || latest.reportPending || !explicit && (latest.reportOpened || cancellations.has(state.id))) return latest || state;
     const opened = { ...latest, reportOpened: true };
@@ -141,7 +141,7 @@
   function nextUrl(value, state) {
     if (typeof value !== 'string' || value.length > 8192) return null;
     const current = serp(state.expectedUrl), next = serp(value);
-    if (!current || !sameSearch(next, state) || next.url.origin !== current.url.origin || (next.engine === 'yandex' ? next.url.pathname.replace(/\/$/, '') !== current.url.pathname.replace(/\/$/, '') : next.url.pathname !== current.url.pathname) || next.cursor <= current.cursor || state.visitedUrls.includes(canonical(value))) return null;
+    if (!current || !sameSearch(next, state) || next.url.origin !== current.url.origin || (next.engine === 'yandex' ? !SeoSerpUrl.nextMatches(value, state.expectedUrl) : next.url.pathname !== current.url.pathname) || next.cursor <= current.cursor || state.visitedUrls.some(visited => SeoSerpUrl.expectedMatches(value, visited))) return null;
     return canonical(value);
   }
   async function navigateDue(state) {
@@ -149,7 +149,8 @@
     if (cancellations.has(state.id)) return stopState(state, 'Stopped by user');
     let tab;
     try { tab = await chrome.tabs.get(state.tabId); } catch { return stopState(state, 'Search tab closed'); }
-    if (!tab.url || canonical(tab.url) !== state.expectedUrl) return write(pause(state, 'Search tab changed; return to the expected results page'));
+    if (!tab.url || !SeoSerpUrl.expectedMatches(tab.url, state.expectedUrl)) return write(pause(state, 'Search tab changed; return to the expected results page'));
+    const sourceUrl = canonical(tab.url);
     const destination = state.pendingUrl;
     // Read the persisted cancellation/state immediately before scheduling navigation.
     const latest = await read();
@@ -162,7 +163,7 @@
     await write(running);
     let currentTab;
     try { currentTab = await chrome.tabs.get(running.tabId); } catch { return stopState(running, 'Search tab closed'); }
-    if (canonical(currentTab.url) !== state.expectedUrl) return write(pause({ ...latest, pendingQueryIndex: null }, 'Search tab changed before navigation'));
+    if (canonical(currentTab.url) !== sourceUrl) return write(pause({ ...latest, pendingQueryIndex: null }, 'Search tab changed before navigation'));
     if (cancellations.has(running.id)) return stopState(running, 'Stopped by user');
     try { await chrome.tabs.update(running.tabId, { url: destination }); } catch { return write(pause(running, 'Could not open the next results page')); }
     return running;
@@ -241,7 +242,7 @@
     if (message.action === 'resume') {
       if (state.status !== 'paused') fail('Only a paused run can resume');
       const info = serp(sender.url);
-      if (!sameSearch(info, state) || canonical(sender.url) !== state.expectedUrl) fail('Return to the expected results page before resuming');
+      if (!sameSearch(info, state) || !SeoSerpUrl.expectedMatches(sender.url, state.expectedUrl)) fail('Return to the expected results page before resuming');
       if (state.mode === 'collect' && state.processedUrl === state.expectedUrl) return publicState(await advanceQuery(state, 'partial', state.reason || 'Partial query accepted by user'));
       return publicState(await write({ ...state, status: 'running', reason: '', processedUrl: null }));
     }
@@ -249,7 +250,7 @@
     if (state.status !== 'running') return publicState(state);
     const snapshot = message.snapshot;
     if (!snapshot || typeof snapshot !== 'object' || !KINDS.has(snapshot.kind) || typeof snapshot.url !== 'string' || snapshot.url.length > 8192) fail('Invalid results snapshot');
-    if (canonical(snapshot.url) !== canonical(sender.url) || canonical(snapshot.url) !== state.expectedUrl) return publicState(await write(pause(state, 'Unexpected page; search URL changed')));
+    if (canonical(snapshot.url) !== canonical(sender.url) || !SeoSerpUrl.expectedMatches(snapshot.url, state.expectedUrl)) return publicState(await write(pause(state, 'Unexpected page; search URL changed')));
     if (snapshot.kind !== 'results') return publicState(await write(pause(state, snapshot.kind === 'captcha' ? 'CAPTCHA requires manual completion' : snapshot.kind === 'consent' ? 'Consent requires manual action' : 'Results could not be recognized')));
     const info = serp(snapshot.url);
     if (!sameSearch(info, state) || snapshot.engine !== state.engine || queryText(snapshot.query) !== state.query || snapshot.page !== info.page) fail('Snapshot search identity does not match this run');
@@ -324,7 +325,7 @@
     if (!change.url) return;
     serial(async () => {
       const state = await read();
-      if (!state || state.tabId !== tabId || !['running', 'waiting'].includes(state.status) || canonical(change.url) === state.expectedUrl) return;
+      if (!state || state.tabId !== tabId || !['running', 'waiting'].includes(state.status) || SeoSerpUrl.expectedMatches(change.url, state.expectedUrl)) return;
       let url; try { url = new URL(change.url); } catch { return; }
       await write(pause(state, engineHost(url) && /sorry|captcha|showcaptcha/i.test(url.pathname) ? 'CAPTCHA requires manual completion' : 'Search tab changed; return to the expected results page'));
     });
