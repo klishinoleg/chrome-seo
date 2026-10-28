@@ -2,6 +2,28 @@
 (() => {
  'use strict';
  const engineOf = host => /^(?:www\.)?google\.(?:com|ru)$/.test(host) ? 'google' : /^(?:www\.)?yandex\.(?:com|ru)$/.test(host) ? 'yandex' : null;
+ const visible = node => !!node && !!node.getClientRects().length && getComputedStyle(node).visibility !== 'hidden' && !node.closest('[hidden], [aria-hidden="true"]');
+ function queryCorrection(url, target) {
+  const notices = [...document.querySelectorAll('.Root[id^="MisspellReask__"] .RequestMeta-Level_type_reask')].filter(visible);
+  if (notices.length !== 1) return null;
+  const message = notices[0].querySelector('.RequestMeta-Message');
+  if (!visible(message) || !/^Исправлена опечатка(?:\s|$)/u.test(message.textContent.trim())) return null;
+  const inputs = [...document.querySelectorAll('input.HeaderForm-Input[name="text"][type="text"]')].filter(visible);
+  if (inputs.length !== 1) return null;
+  const query = inputs[0].value, originalQuery = url.searchParams.get('text');
+  if (!query.trim() || query.length > 500 || url.searchParams.getAll('text').length !== 1 || target.searchParams.getAll('text').length !== 1 || query === originalQuery || target.searchParams.get('text') !== query) return null;
+  const corrected = new URL(url.href); corrected.searchParams.set('text', query);
+  if (!SeoSerpUrl.nextMatches(target.href, corrected.href)) return null;
+  const cancellations = [...notices[0].querySelectorAll('a[href]')].filter(anchor => visible(anchor) && anchor.textContent.trim() === 'Отменить');
+  if (cancellations.length !== 1) return null;
+  try {
+   const cancel = new URL(cancellations[0].href, url), values = cancel.searchParams.getAll('noreask');
+   if (url.searchParams.has('noreask') || values.length !== 1 || values[0] !== '1') return null;
+   const cancelUrl = cancel.href; cancel.searchParams.delete('noreask');
+   if (!SeoSerpUrl.expectedMatches(cancel.href, url.href)) return null;
+   return {originalQuery,query,cancelUrl};
+  } catch { return null; }
+ }
  function destination(anchor) {
   try {
    let url = new URL(anchor.href, location.href);
@@ -44,7 +66,10 @@
    try {
     const target = new URL(next.href, url);
     const nextOffset = Number(target.searchParams.get(engine === 'google' ? 'start' : 'p'));
-    if (target.protocol === 'https:' && engineOf(target.hostname) === engine && /^\/search\/?$/.test(target.pathname) && target.searchParams.get(engine === 'google' ? 'q' : 'text') === query && Number.isInteger(nextOffset) && nextOffset > offset) { base.nextUrl = target.href; base.nextKind = 'valid'; }
+    if (engine === 'yandex') {
+     const correction = SeoSerpUrl.nextMatches(target.href, url.href) || !visible(next) || next.closest('[disabled], [aria-disabled="true"]') ? null : queryCorrection(url, target);
+     if (SeoSerpUrl.nextMatches(target.href, url.href) || correction) { base.nextUrl = target.href; base.nextKind = 'valid'; if (correction) base.queryCorrection = correction; }
+    } else if (target.protocol === 'https:' && engineOf(target.hostname) === engine && /^\/search\/?$/.test(target.pathname) && target.searchParams.get('q') === query && Number.isInteger(nextOffset) && nextOffset > offset) { base.nextUrl = target.href; base.nextKind = 'valid'; }
    } catch { /* Unknown links never become navigation instructions. */ }
   }
   return base;
