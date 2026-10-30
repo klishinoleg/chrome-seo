@@ -33,12 +33,13 @@
       (url.searchParams.has('hl') && !/^[a-z]{2,3}(?:-[a-zA-Z]{2,4})?$/.test(url.searchParams.get('hl')))) fail('В отчёте обнаружен фильтр или неизвестный параметр.');
   const tables = document.querySelectorAll('table.i3WFpf');
   if (tables.length !== 1) fail('Не удалось однозначно определить таблицу.');
-  const table = tables[0];
+  const table = tables[0], scope = reportScope(table);
+  if (!scope) fail('Не удалось определить общую область отчёта.');
   const names = [['Сайт', 'Site'], ['Страницы со ссылками на ресурс', 'Linking pages'], ['Страницы назначения', 'Target pages']];
   const headers = [...table.querySelectorAll('thead th')];
   if (headers.length !== 3 || headers.some((header, index) =>
    !names[index].includes(header.getAttribute('data-name')) || header.getAttribute('data-type') !== (index ? 'number' : 'string'))) fail('Неизвестные колонки таблицы.');
-  const filterProof = clearFilters(table);
+  const filterProof = clearFilters(scope.header);
   if (!filterProof.clear) fail('Состояние фильтров не подтверждено.');
   const seen = new Set();
   const rows = [...table.querySelectorAll('tbody tr')].map(row => {
@@ -54,11 +55,11 @@
    });
    return {domain: domain.toLowerCase(), links: numbers[0], targetPages: numbers[1]};
   });
-  const sibling = table.closest('div.xIJlRd');
-  const pagination = sibling?.querySelector('.UwdJ1c');
+  const paginations = scope.pager.querySelectorAll('.UwdJ1c');
+  const pagination = paginations.length === 1 ? paginations[0] : null;
   const text = pagination?.textContent.replace(/\s+/g, ' ').trim() || '';
   const match = text.match(/(?:^|\s)(\d+)\s*[–—-]\s*(\d+)\s*(?:из|of)\s*(\d+)(?:\s|$)/i);
-  const controls = sibling ? [...sibling.querySelectorAll('[data-paginate]')] : [];
+  const controls = [...scope.pager.querySelectorAll('[data-paginate]')];
   const values = match?.slice(1).map(Number);
   const validRange = !!values && values.every(Number.isSafeInteger) && (values[2] ? values[0] >= 1 : values[0] === 0) &&
    values[1] >= values[0] && values[1] <= values[2] && rows.length === (values[2] ? values[1] - values[0] + 1 : 0);
@@ -69,10 +70,19 @@
   const complete = values[0] === (values[2] ? 1 : 0) && values[1] === values[2];
   return {url: url.href, resourceId, rows, coverage: {start: values[0], end: values[1], total: values[2], complete}, filters: filterProof};
  }
- function clearFilters(table) {
+ function reportScope(table) {
+  const report = table.closest('div[jsname="jyrRxf"][jscontroller="uk9a3"]');
+  if (!report || report.querySelectorAll('table.i3WFpf').length !== 1) return null;
+  const headers = report.querySelectorAll('c-wiz[jsname="kZksbc"] > div.xIJlRd');
+  const holders = report.querySelectorAll('div[jsname="FOLXuf"] > div.CtOYUe');
+  const pagers = report.querySelectorAll('div.VgjuZe > div[jsname="WKVttf"].zKhHyb > div.utnMJd');
+  if (headers.length !== 1 || holders.length !== 1 || pagers.length !== 1 ||
+      !holders[0].contains(table)) return null;
+  return {header: headers[0], pager: pagers[0]};
+ }
+ function clearFilters(header) {
   // An explicit known toolbar is required; absence of filter chips alone is not proof.
-  const section = table.closest('div.xIJlRd');
-  const toolbars = section?.querySelectorAll('div.c1UqTd div.kHsG div.Y9Rb7');
+  const toolbars = header.querySelectorAll('div.c1UqTd div.kHsG div.Y9Rb7');
   if (toolbars?.length !== 1) return {clear: false, evidence: 'known-toolbar'};
   const toolbar = toolbars[0], filters = toolbar.querySelectorAll('div[jsname="BbxQOb"].Qi0ZXd');
   const buttons = toolbar.querySelectorAll('[role="button"][jsname="mghfO"]');
