@@ -1,5 +1,5 @@
 'use strict';
-importScripts('lists-store.js', 'deepseek.js', 'openpagerank.js', 'report-store.js', 'serp-url.js', 'rank-runner.js', 'query-queue.js');
+importScripts('lists-store.js', 'deepseek.js', 'openpagerank.js', 'report-store.js', 'serp-url.js', 'rank-runner.js', 'query-queue.js', 'gsc-history-model.js', 'gsc-history-store.js');
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.type !== 'seoLists') return false;
   SeoListsStore.dispatch(message).then(
@@ -49,6 +49,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   SeoAnalysisQueue.dispatch(message, sender).then(
     queries => sendResponse({ ok: true, queries }),
     error => sendResponse({ ok: false, error: error.message || 'Query queue failed' })
+  );
+  return true;
+});
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || message.type !== 'seoGscHistory') return false;
+  SeoGscHistoryStore.dispatch(message, sender).then(
+    result => sendResponse({ ok: true, result }),
+    error => sendResponse({ ok: false, error: error.message || 'История Search Console недоступна.' })
   );
   return true;
 });

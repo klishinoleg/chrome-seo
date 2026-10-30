@@ -1,0 +1,176 @@
+/* Private Search Console DOM snapshots, actual MV3 worker, IDB and shared folder. */
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const http = require('node:http');
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const root = path.resolve(__dirname, '..');
+let browser, checks = 0;
+const check = (value, label) => { assert.ok(value, label); checks++; console.log(`PASS ${label}`); };
+const server = http.createServer((req, res) => {
+  const name = path.resolve(root, `.${new URL(req.url, 'http://local').pathname}`);
+  if (!name.startsWith(root + path.sep) || !fs.existsSync(name) || !fs.statSync(name).isFile()) return res.writeHead(404).end();
+  res.setHeader('Content-Type', name.endsWith('.js') ? 'text/javascript; charset=utf-8' : name.endsWith('.css') ? 'text/css' : 'text/html; charset=utf-8');
+  res.end(fs.readFileSync(name));
+});
+let rows = [{ domain: 'alpha.example', links: 100, targetPages: 3 }, { domain: 'beta.example', links: 20, targetPages: 1 }];
+let filtered = false, total = null, rangeStart = 1;
+const escape = value => String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+function fixture() {
+  const count = total ?? rows.length;
+  return `<!doctype html><html lang="ru"><head><title>Links report fixture</title></head><body><main><h1>Сайты, ссылающиеся чаще всего</h1><div class="xIJlRd"><div class="c1UqTd"><div class="kHsG"><div class="Y9Rb7"><div jsname="BbxQOb" class="Qi0ZXd" style="display:${filtered ? 'block' : 'none'}">${filtered ? '<span>Сайт содержит alpha</span>' : ''}</div><div role="button" jsname="mghfO" aria-label="Фильтрация по строкам таблицы" aria-expanded="false">Фильтр</div></div></div></div><table class="i3WFpf"><thead><tr><th data-type="string" data-name="Сайт">Сайт</th><th data-type="number" data-name="Страницы со ссылками на ресурс">Страницы со ссылками на ресурс</th><th data-type="number" data-name="Страницы назначения">Страницы назначения</th></tr></thead><tbody>${rows.map(row => `<tr><td data-string-value="${escape(row.domain)}"><span>${escape(row.domain)}</span><span data-value="${escape(row.domain)}" data-column-type="12">↗</span></td><td data-numeric-value="${row.links}">${row.links}</td><td data-numeric-value="${row.targetPages}">${row.targetPages}</td></tr>`).join('')}</tbody></table><div class="utnMJd"><span class="UwdJ1c">${rows.length ? `${rangeStart}–${rangeStart+rows.length-1}` : '0–0'} из ${count}</span><span data-paginate="previous" aria-disabled="${rangeStart === 1}"></span><span data-paginate="next" aria-disabled="${count === rangeStart+rows.length-1 || !count}"></span></div></div></main></body></html>`;
+}
+(async () => {
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const local = `http://127.0.0.1:${server.address().port}`;
+  browser = await chromium.launchPersistentContext('', { executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true, viewport: { width: 1100, height: 820 }, args: ['--enable-unsafe-extension-debugging'], ignoreDefaultArgs: ['--disable-extensions'] });
+  const cdp = await browser.browser().newBrowserCDPSession();
+  const { id } = await cdp.send('Extensions.loadUnpacked', { path: root });
+  await browser.route(/^https?:\/\//, route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());
+  await browser.route('https://search.google.com/**', route => route.fulfill({ contentType: 'text/html; charset=utf-8', body: fixture() }));
+  const admin = await browser.newPage(); await admin.goto(`chrome-extension://${id}/library.html`);
+  const source = await browser.newPage(), errors = [];
+  source.on('pageerror', error => { errors.push(error.stack); console.error('GSC PAGE ERROR', error.stack); });
+  const property = 'https://first.example/';
+  const urlFor = resource => `https://search.google.com/search-console/links/drilldown?${new URLSearchParams({ resource_id: resource, type: 'DOMAIN', target: '', domain: '', hl: 'ru' })}`;
+  await source.goto(urlFor(property));
+  const tabId = await admin.evaluate(async url => (await chrome.tabs.query({})).find(t => t.url === url).id, source.url());
+  const snapshot = () => admin.evaluate(async tabId => {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['gsc-page.js'] });
+    const entry=(await chrome.scripting.executeScript({ target: { tabId }, func: () => { try { return {data:globalThis.SeoGscPage.snapshot()}; } catch(error) { return {error:error.message}; } } }))[0].result; if(entry.error) throw new Error(entry.error); return entry.data;
+  }, tabId);
+  const raw = (action, payload = {}) => admin.evaluate(message => chrome.runtime.sendMessage(message), { type: 'seoGscHistory', action, tabId, resourceId: new URL(source.url()).searchParams.get('resource_id'), ...payload });
+  const rpc = async (action, payload) => { const reply = await raw(action, payload); assert.ok(reply?.ok, reply?.error); return reply.result; };
+  const capture = async () => rpc('capture', { snapshot: await snapshot() });
+  let parsed = await snapshot();
+  check(parsed.resourceId === property && parsed.rows.length === 2 && parsed.rows[0].links === 100, 'actual table attributes produce clean domains and exact page counts');
+  check(parsed.coverage.complete && parsed.coverage.total === 2, 'full pagination and clear filter toolbar prove snapshot coverage');
+  let result = await capture();
+  check(result.history.length === 1 && result.summary.domains.find(row=>row.domain==='alpha.example').firstSeenAt, 'first explicit snapshot creates a per-resource baseline and first observation');
+  const firstSeen=result.summary.domains.find(row=>row.domain==='alpha.example').firstSeenAt;
+  await source.reload();
+  check((await rpc('get')).history.length === 1, 'page refresh annotates without silently saving a measurement');
+  result = await capture();
+  check(result.history.length === 1 && result.workingDay.complete, 'repeated capture in one calendar day updates the same daily measurement');
+  rows = [{domain:'alpha.example',links:105,targetPages:4},{domain:'beta.example',links:20,targetPages:1},{domain:'gamma.example',links:8,targetPages:2}];
+  await source.reload();
+  await source.waitForFunction(() => document.body.textContent.includes('NEW'));
+  check((await rpc('get')).history.length === 1, 'new unsaved source gets NEW on the page before capture without auto-saving');
+  result = await capture();
+  const byDomain = domain => result.summary.domains.find(row => row.domain === domain);
+  check(!result.summary.noChanges && byDomain('alpha.example').deltaLinks === 5, 'changed source reports signed difference against previous measurement');
+  check(byDomain('gamma.example').status === 'new' && byDomain('beta.example').status !== 'new', 'new source is NEW while original baseline source remains known');
+  check(byDomain('alpha.example').firstSeenAt === firstSeen, 'first observation never resets when link counts change');
+  await source.reload(); await source.waitForFunction(() => document.body.textContent.includes('NEW'));
+  result = await capture();
+  check(result.history.length===1 && byDomain('gamma.example').status==='new' && byDomain('alpha.example').deltaLinks===5, 'same-day repeat preserves NEW and compares counts against the daily baseline');
+  filtered=true; await source.reload();let denied;
+  try{await capture();}catch(error){denied=error;}
+  check(Boolean(denied),'filtered table cannot silently replace domain history');
+  filtered=false;total=5;rows=rows.slice(0,2);await source.reload();result=await capture();
+  check(!result.workingDay.complete && result.history.length===1,'partial page appends to the current daily measurement without claiming complete coverage');
+  rangeStart=3;rows=[{domain:'gamma.example',links:8,targetPages:2},{domain:'delta.example',links:6,targetPages:1},{domain:'epsilon.example',links:3,targetPages:1}];await source.reload();result=await capture();
+  check(result.workingDay.complete && result.workingDay.rows.length===5 && result.history.length===1,'multiple pagination captures merge into one complete five-domain daily snapshot');
+  rangeStart=1;rows=[{domain:'alpha.example',links:107,targetPages:4},{domain:'beta.example',links:20,targetPages:1}];await source.reload();result=await capture();
+  check(result.workingDay.rows.length===5 && byDomain('alpha.example').deltaLinks===7,'overlapping page replaces counts without duplicates and retains prior pages');
+  const beforeInvalid = (await rpc('get')).history.length;
+  parsed = await snapshot(); parsed.rows.push({ ...parsed.rows[0] });
+  check(!(await raw('capture', { snapshot: parsed })).ok, 'worker rejects duplicate domains despite a claimed complete snapshot');
+  parsed = await snapshot(); parsed.url = urlFor('https://other.example/'); parsed.resourceId = 'https://other.example/';
+  check(!(await raw('capture', { snapshot: parsed })).ok, 'snapshot cannot forge another resource behind the bound source tab');
+  check((await rpc('get')).history.length === beforeInvalid, 'rejected snapshots never alter saved history');
+  const direct = await admin.evaluate(async ({ tabId, resourceId }) => (await chrome.scripting.executeScript({ target: { tabId }, func: async resourceId => ({ read: await chrome.runtime.sendMessage({ type: 'seoGscHistory', action: 'pageState', resourceId }), mutate: await chrome.runtime.sendMessage({ type: 'seoGscHistory', action: 'capture', resourceId }), other: await chrome.runtime.sendMessage({ type: 'seoGscHistory', action: 'pageState', resourceId: 'https://other.example/' }) }), args: [resourceId] }))[0].result, { tabId, resourceId: property });
+  check(direct.read.ok && !direct.mutate.ok && !direct.other.ok, 'content can read only its own annotations and cannot mutate or read another resource');
+  const fileName = (await rpc('get')).sync.fileName;
+  await admin.evaluate(async () => {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('shared-lists-data', { create: true });
+    const db = await new Promise((resolve, reject) => { const req = indexedDB.open('seoListsFS', 1); req.onupgradeneeded = () => req.result.createObjectStore('handles'); req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
+    await new Promise((resolve, reject) => { const tx = db.transaction('handles', 'readwrite'); tx.objectStore('handles').put(dir, 'directory'); tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); }); db.close();
+    const reply = await chrome.runtime.sendMessage({ type: 'seoLists', action: 'connectDirectory' }); if (!reply.ok) throw new Error(reply.error);
+  });
+  result = await rpc('sync');
+  const readFile = name => admin.evaluate(async name => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('shared-lists-data'); return (await (await dir.getFileHandle(name)).getFile()).text(); }, name);
+  let mirrored = JSON.parse(await readFile(fileName));
+  check(!result.sync.pending && mirrored.resourceId === property && mirrored.days.length===1 && mirrored.events.length>=beforeInvalid, 'history mirrors to its own file in the already connected lists directory');
+  check(JSON.parse(await readFile('seo-lists.json')).version === 1, 'history mirror leaves the saved-lists schema/file intact');
+  const firstFile = fileName;
+  await source.goto(urlFor('sc-domain:second.example')); result = await capture();
+  check(result.history.length===1 && result.sync.fileName !== firstFile, 'domain property has independent baseline and collision-safe file name');
+  check(JSON.parse(await readFile(firstFile)).days.length===1, 'another resource never overwrites first resource history');
+  const worker = (await cdp.send('Target.getTargets')).targetInfos.find(t => t.type === 'service_worker' && t.url === `chrome-extension://${id}/background.js`);
+  await cdp.send('Target.closeTarget', { targetId: worker.targetId });
+  check((await rpc('get')).history.length===1,'history and folder metadata survive actual worker restart');
+  rows=[];rangeStart=1;total=0;await source.goto(urlFor('https://empty.example/'));result=await capture();
+  check(result.workingDay.complete && result.workingDay.rows.length===0,'known empty report can form an explicitly complete zero-row baseline');
+  rows=[{domain:'alpha.example',links:107,targetPages:4},{domain:'beta.example',links:20,targetPages:1},{domain:'gamma.example',links:8,targetPages:2},{domain:'delta.example',links:6,targetPages:1},{domain:'epsilon.example',links:3,targetPages:1}];
+  total=5;await source.goto(urlFor(property));
+  const validFile=await readFile(firstFile);
+  const writeFile=(name,text)=>admin.evaluate(async({name,text})=>{const dir=await(await navigator.storage.getDirectory()).getDirectoryHandle('shared-lists-data');const file=await dir.getFileHandle(name,{create:true});const writable=await file.createWritable();await writable.write(text);await writable.close();},{name,text});
+  await writeFile(firstFile,'{broken JSON');result=await capture();
+  check(result.sync.pending && result.sync.error && await readFile(firstFile)==='{broken JSON','malformed external file is preserved and local capture remains pending');
+  check(result.workingDay.rows.find(row=>row.domain==='alpha.example').links===107,'failed folder mirror does not lose the local daily snapshot');
+  await writeFile(firstFile,validFile);result=await rpc('sync');
+  check(!result.sync.pending && JSON.parse(await readFile(firstFile)).events.length>JSON.parse(validFile).events.length,'restored valid file merges old and pending local captures without losing history');
+  const nativeWorker=browser.serviceWorkers().find(value=>value.url()===`chrome-extension://${id}/background.js`);
+  const beforePermission=await readFile(firstFile);
+  await nativeWorker.evaluate(()=>{globalThis.__gscPermissionOriginal=FileSystemDirectoryHandle.prototype.queryPermission;FileSystemDirectoryHandle.prototype.queryPermission=async()=> 'denied';});
+  rows[0].links=108;await source.reload();result=await capture();
+  check(result.sync.pending && result.sync.error && await readFile(firstFile)===beforePermission,'revoked folder permission preserves local daily data and leaves mirror untouched');
+  await nativeWorker.evaluate(()=>{FileSystemDirectoryHandle.prototype.queryPermission=globalThis.__gscPermissionOriginal;delete globalThis.__gscPermissionOriginal;});
+  result=await rpc('sync');check(!result.sync.pending,'restoring folder permission flushes pending capture safely');
+  await admin.evaluate(()=>chrome.runtime.sendMessage({type:'seoLists',action:'disconnectDirectory'}));
+  const beforeDisconnect=await readFile(firstFile);result=await capture();
+  check(result.sync.pending && !result.sync.connected && await readFile(firstFile)===beforeDisconnect,'disconnecting lists folder stops history writes without deleting local snapshots');
+  await admin.evaluate(async()=>{
+    const dir=await(await navigator.storage.getDirectory()).getDirectoryHandle('shared-lists-data');
+    const db=await new Promise((resolve,reject)=>{const req=indexedDB.open('seoListsFS',1);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});
+    await new Promise((resolve,reject)=>{const tx=db.transaction('handles','readwrite');tx.objectStore('handles').put(dir,'directory');tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});db.close();
+    const reply=await chrome.runtime.sendMessage({type:'seoLists',action:'connectDirectory'});if(!reply.ok)throw new Error(reply.error);
+  });
+  await rpc('sync');
+  const popup=await browser.newPage();popup.on('pageerror',error=>{errors.push(error.stack);console.error('GSC POPUP ERROR',error.stack);});
+  let activeDelay=0;
+  await popup.exposeFunction('__gscActive',async()=>{if(activeDelay)await new Promise(resolve=>setTimeout(resolve,activeDelay));return{id:tabId,url:source.url()};});
+  await popup.exposeFunction('__gscStorageGet',keys=>admin.evaluate(keys=>chrome.storage.local.get(keys),keys));
+  await popup.exposeFunction('__gscStorageSet',data=>admin.evaluate(data=>chrome.storage.local.set(data),data));
+  await popup.exposeFunction('__gscMessage',message=>admin.evaluate(message=>chrome.runtime.sendMessage(message),message));
+  await popup.exposeFunction('__gscInject',files=>admin.evaluate(({tabId,files})=>chrome.scripting.executeScript({target:{tabId},files}),{tabId,files}));
+  await popup.exposeFunction('__gscSnapshot',async()=>{try{return{snapshot:await snapshot()};}catch(error){return{error:error.message};}});
+  await popup.exposeFunction('__gscAnalyze',()=>admin.evaluate(async tabId=>(await chrome.scripting.executeScript({target:{tabId},func:()=>globalThis.__chromeSeo.analyze()}))[0].result,tabId));
+  await popup.exposeFunction('__gscNotify',()=>admin.evaluate(tabId=>chrome.tabs.sendMessage(tabId,{type:'seoGscRefresh'}),tabId));
+  await popup.addInitScript(({id,manifest})=>{
+    window.chrome={
+      tabs:{query:async()=>[await __gscActive()],create:async()=>({id:999}),sendMessage:async()=>__gscNotify(),onActivated:{addListener(){}},onUpdated:{addListener(){}}},
+      storage:{local:{get:keys=>__gscStorageGet(keys),set:data=>__gscStorageSet(data)},onChanged:{addListener(){}}},
+      runtime:{getURL:file=>`chrome-extension://${id}/${file}`,getManifest:()=>manifest,sendMessage:message=>__gscMessage(message)},
+      scripting:{executeScript:async options=>{
+        if(options.files)return __gscInject(options.files);
+        if(options.func?.toString().includes('SeoGscPage.snapshot'))return[{result:await __gscSnapshot()}];
+        if(options.args?.[0]==='analyze')return[{result:await __gscAnalyze()}];
+        return[{result:null}];
+      }}
+    };
+  },{id,manifest:JSON.parse(fs.readFileSync(path.join(root,'manifest.json'),'utf8'))});
+  await popup.goto(`${local}/popup.html`);await popup.locator('[data-tab="gsc"]').waitFor({state:'visible'});
+  check(await popup.locator('[data-tab="gsc"]').isVisible(),'extra history tab is visible on the exact Search Console drilldown page');
+  await popup.locator('[data-tab="gsc"]').click();await popup.locator('#gsc-capture').click();
+  await popup.waitForFunction(()=>document.querySelector('#gsc-status').textContent.includes('изменений'));
+  check((await rpc('get')).history.length===1 && (await popup.locator('#gsc-history li').count())===1,'real popup capture shows one daily history row even after repeated pagination captures');
+  check((await popup.locator('#gsc-results').textContent()).includes('NEW'),'popup displays saved daily NEW status without clearing it on repeat');
+  activeDelay=200;await popup.reload();await popup.locator('[data-tab="gsc"]').waitFor({state:'visible'});await popup.waitForTimeout(300);
+  check(await popup.locator('.panel.active').getAttribute('id')==='gsc','saved GSC tab restores even when active-tab lookup resolves after storage preference');activeDelay=0;
+  const screenshot='C:/Users/klish/.codex/visualizations/2026/10/22/01a1638b-a337-75d1-b3e3-680cfe652ad8/chrome-seo-gsc-popup.png';
+  await popup.screenshot({path:screenshot});
+  await source.reload();await source.waitForSelector('[data-seo-gsc-history]');
+  await source.screenshot({path:screenshot.replace('popup','page')});
+  await browser.route('https://ordinary.example/**',route=>route.fulfill({contentType:'text/html',body:'<h1>Ordinary website</h1>'}));
+  await source.goto('https://ordinary.example/search-console/links/drilldown');await popup.evaluate(()=>SeoGscPopup.refresh());
+  check(await popup.locator('[data-tab="gsc"]').isHidden() && await popup.locator('.panel.active').getAttribute('id')==='meta','same path on another origin hides the tab and safely falls back to META');
+  check(await admin.evaluate(async()=>(await chrome.storage.local.get('lastInspectorTab')).lastInspectorTab)==='gsc','unsupported-page fallback does not overwrite the saved global GSC tab preference');
+  await source.goto('https://search.google.com/search-console/links');await popup.evaluate(()=>SeoGscPopup.refresh());
+  check(await popup.locator('[data-tab="gsc"]').isHidden(),'other Search Console reports do not show the conditional tab');
+  await source.goto(urlFor(property));await popup.evaluate(()=>SeoGscPopup.refresh());
+  check(await popup.locator('[data-tab="gsc"]').isVisible(),'returning to the supported report restores conditional availability');
+  check(errors.length === 0, `Search Console annotation and snapshot flows have no uncaught exceptions: ${JSON.stringify(errors)}`);
+  console.log(`PASS ${checks} Search Console history integration checks (private report fixture only)`);
+})().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => { await browser?.close(); server.close(); });

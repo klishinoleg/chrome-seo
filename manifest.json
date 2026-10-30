@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SEO / инспектор",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "META, ключевые слова, микроразметка и внешние ссылки текущей страницы.",
   "permissions": [
     "activeTab",
@@ -46,6 +46,15 @@
         "query-picker.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://search.google.com/search-console/*"
+      ],
+      "js": [
+        "gsc-page.js"
+      ],
+      "run_at": "document_idle"
     }
   ],
   "background": {
@@ -63,6 +72,7 @@
     "https://www.yandex.com/*",
     "https://yandex.ru/*",
     "https://www.yandex.ru/*",
-    "https://wordstat.yandex.ru/*"
+    "https://wordstat.yandex.ru/*",
+    "https://search.google.com/*"
   ]
 }

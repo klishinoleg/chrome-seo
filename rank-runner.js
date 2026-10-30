@@ -41,10 +41,10 @@
   async function write(state) { cached = state; await chrome.storage.session.set({ [KEY]: state }); return state; }
   function publicState(state) {
     if (!state) return null;
-    const { seenUrls, visitedUrls, pendingUrl, processedUrl, pendingQueryIndex, pendingEffectiveQuery, searchBase, reportPending, reportStatus, reportCreatedAt, reportOpened, ...result } = state;
+    const { seenUrls, visitedUrls, pendingUrl, processedUrl, paginationRetryUrl, pendingQueryIndex, pendingEffectiveQuery, searchBase, reportPending, reportStatus, reportCreatedAt, reportOpened, ...result } = state;
     return result;
   }
-  function pause(state, reason) { return { ...state, status: 'paused', reason, nextAt: null, pendingUrl: null, pendingEffectiveQuery: null }; }
+  function pause(state, reason) { return { ...state, status: 'paused', reason, nextAt: null, pendingUrl: null, pendingEffectiveQuery: null, paginationRetryUrl: null }; }
   function collectQueries(value) {
     const input = typeof value === 'string' ? value.split(/\r?\n/) : value;
     if (!Array.isArray(input) || input.length > 1000) fail('Enter up to 20 queries');
@@ -104,13 +104,13 @@
     return write({ ...state, queryResults: report.queryResults, resultsSeen: report.queryResults[state.queryIndex].count, reportStatus: report.status, reportPending: false });
   }
   async function finishCollect(state, status, reportStatus, reason) {
-    const terminal = await write({ ...state, status, reason, nextAt: null, pendingUrl: null, pendingQueryIndex: null, pendingEffectiveQuery: null, reportId: state.reportId || state.id, reportPending: !state.reportId || state.reportPending, reportStatus: state.reportStatus || reportStatus, reportCreatedAt: state.reportCreatedAt || new Date().toISOString() });
+    const terminal = await write({ ...state, status, reason, nextAt: null, pendingUrl: null, pendingQueryIndex: null, pendingEffectiveQuery: null, paginationRetryUrl: null, reportId: state.reportId || state.id, reportPending: !state.reportId || state.reportPending, reportStatus: state.reportStatus || reportStatus, reportCreatedAt: state.reportCreatedAt || new Date().toISOString() });
     let saved = await recoverReport(terminal);
     if (cancellations.has(saved.id)) saved = await write({ ...saved, status: 'stopped', reason: 'Stopped by user' });
     return status === 'completed' && saved.status === 'completed' ? openSavedReport(saved) : saved;
   }
   async function stopState(state, reason) {
-    let stopped = { ...state, status: 'stopped', reason, nextAt: null, pendingUrl: null, pendingQueryIndex: null, pendingEffectiveQuery: null };
+    let stopped = { ...state, status: 'stopped', reason, nextAt: null, pendingUrl: null, pendingQueryIndex: null, pendingEffectiveQuery: null, paginationRetryUrl: null };
     if (state.mode === 'collect') {
       if (!state.reportId && ['running', 'paused', 'pending'].includes(state.queryResults[state.queryIndex].status)) stopped = queryResult(stopped, 'stopped', reason);
       return finishCollect(stopped, 'stopped', 'stopped', reason);
@@ -125,7 +125,7 @@
       const complete = state.queryResults.every(item => item.status === 'completed' && item.count >= state.limit);
       return finishCollect(state, 'completed', complete ? 'completed' : 'partial', complete ? 'All queries collected' : 'Batch finished with partial query results');
     }
-    return write({ ...state, status: 'waiting', reason: 'Waiting before the next query', pendingQueryIndex: nextIndex, pendingEffectiveQuery: null, pendingUrl: firstQueryUrl(state, state.queries[nextIndex]), nextAt: Date.now() + 2500 });
+    return write({ ...state, status: 'waiting', reason: 'Waiting before the next query', pendingQueryIndex: nextIndex, pendingEffectiveQuery: null, paginationRetryUrl: null, pendingUrl: firstQueryUrl(state, state.queries[nextIndex]), nextAt: Date.now() + 2500 });
   }
   async function contentTab(sender, state) {
     if (!sender || sender.id !== chrome.runtime.id || !sender.tab || !Number.isInteger(sender.tab.id) || typeof sender.url !== 'string' || typeof sender.tab.url !== 'string') fail('Run commands require the search tab');
@@ -162,6 +162,16 @@
     if (!current || !sameSearch(next, correction ? { ...state, effectiveQuery: queryText(correction) } : state) || next.url.origin !== current.url.origin || (next.engine === 'yandex' ? !SeoSerpUrl.nextMatches(value, expected.href) : next.url.pathname !== current.url.pathname) || next.cursor <= current.cursor || state.visitedUrls.some(visited => SeoSerpUrl.expectedMatches(value, visited))) return null;
     return canonical(value);
   }
+  async function followNext(state, snapshot) {
+    if (state.mode === 'collect') {
+      if (snapshot.nextKind === 'invalid' || snapshot.nextKind === 'valid' && !snapshot.nextUrl || snapshot.nextKind === 'none' && snapshot.nextUrl) return write(pause(state, 'Invalid next-page link; partial rows retained'));
+      if ((snapshot.nextKind === undefined || snapshot.nextKind === 'none') && (snapshot.nextUrl === null || snapshot.nextUrl === undefined)) return advanceQuery(state, 'partial', 'Next-page link unavailable; only observed organic cards retained');
+    }
+    const correction = correctedQuery(snapshot, state);
+    const next = nextUrl(snapshot.nextUrl, state, correction);
+    if (!next) return write(pause(state, snapshot.nextUrl || snapshot.nextKind === 'invalid' ? 'Invalid or repeated next-page URL' : 'Next-page link is unavailable'));
+    return write({ ...state, status: 'waiting', pendingUrl: next, pendingEffectiveQuery: correction, paginationRetryUrl: null, nextAt: Date.now() + 2500, reason: 'Waiting before the next results page' });
+  }
   async function navigateDue(state) {
     if (!state || state.status !== 'waiting' || !state.pendingUrl || Date.now() < state.nextAt) return state;
     if (cancellations.has(state.id)) return stopState(state, 'Stopped by user');
@@ -173,7 +183,7 @@
     // Read the persisted cancellation/state immediately before scheduling navigation.
     const latest = await read();
     if (!latest || latest.id !== state.id || latest.status !== 'waiting' || cancellations.has(state.id)) return latest;
-    let running = { ...latest, effectiveQuery: latest.pendingEffectiveQuery ? queryText(latest.pendingEffectiveQuery) : effectiveQuery(latest), pendingEffectiveQuery: null, expectedUrl: destination, status: 'running', reason: '', nextAt: null, pendingUrl: null, processedUrl: null };
+    let running = { ...latest, effectiveQuery: latest.pendingEffectiveQuery ? queryText(latest.pendingEffectiveQuery) : effectiveQuery(latest), pendingEffectiveQuery: null, paginationRetryUrl: null, expectedUrl: destination, status: 'running', reason: '', nextAt: null, pendingUrl: null, processedUrl: null };
     if (Number.isInteger(latest.pendingQueryIndex)) {
       running = { ...running, queryIndex: latest.pendingQueryIndex, query: latest.queries[latest.pendingQueryIndex], effectiveQuery: latest.queries[latest.pendingQueryIndex], pagesVisited: 0, resultsSeen: 0, currentPage: 1, visitedUrls: [], seenUrls: [], pendingQueryIndex: null };
       running = queryResult(running, 'running', '');
@@ -261,8 +271,8 @@
       if (state.status !== 'paused') fail('Only a paused run can resume');
       const info = serp(sender.url);
       if (!sameSearch(info, state) || !SeoSerpUrl.expectedMatches(sender.url, state.expectedUrl)) fail('Return to the expected results page before resuming');
-      if (state.mode === 'collect' && state.processedUrl === state.expectedUrl) return publicState(await advanceQuery(state, 'partial', state.reason || 'Partial query accepted by user'));
-      return publicState(await write({ ...state, status: 'running', reason: '', processedUrl: null }));
+      const counted = state.processedUrl === state.expectedUrl || state.visitedUrls.includes(state.expectedUrl);
+      return publicState(await write({ ...state, status: 'running', reason: '', processedUrl: counted ? state.processedUrl : null, paginationRetryUrl: counted ? state.expectedUrl : null }));
     }
     if (message.action !== 'snapshot') fail('Unknown rank-run action');
     if (state.status !== 'running') return publicState(state);
@@ -273,7 +283,10 @@
     const info = serp(snapshot.url);
     if (!sameSearch(info, state) || snapshot.engine !== state.engine || queryText(snapshot.query) !== effectiveQuery(state) || snapshot.page !== info.page) fail('Snapshot search identity does not match this run');
     if (!Array.isArray(snapshot.results) || snapshot.results.length > 100) fail('Invalid organic results');
-    if (state.processedUrl === state.expectedUrl || state.visitedUrls.includes(state.expectedUrl)) return publicState(await write(pause(state, 'This results page has already been counted')));
+    if (state.processedUrl === state.expectedUrl || state.visitedUrls.includes(state.expectedUrl)) {
+      if (state.paginationRetryUrl === state.expectedUrl) return publicState(await followNext({ ...state, paginationRetryUrl: null }, snapshot));
+      return publicState(await write(pause(state, 'This results page has already been counted')));
+    }
     const urls = snapshot.results.map(result => {
       if (!result || typeof result.url !== 'string' || result.url.length > 8192) fail('Invalid organic result URL');
       let url;
@@ -310,17 +323,10 @@
       state = queryResult(state, 'running', '');
       if (state.resultsSeen >= state.limit) return publicState(await advanceQuery(state, 'completed', 'Requested result count collected'));
       if (state.pagesVisited >= 10) return publicState(await advanceQuery(state, 'partial', 'Ten results pages observed before reaching the requested count'));
-      if (snapshot.nextKind === 'invalid' || snapshot.nextKind === 'valid' && !snapshot.nextUrl || snapshot.nextKind === 'none' && snapshot.nextUrl) return publicState(await write(pause(state, 'Invalid next-page link; partial rows retained')));
-      if ((snapshot.nextKind === undefined || snapshot.nextKind === 'none') && (snapshot.nextUrl === null || snapshot.nextUrl === undefined)) return publicState(await advanceQuery(state, 'partial', 'Next-page link unavailable; only observed organic cards retained'));
     }
     if (!state.found) {
       if (state.resultsSeen >= 100 || state.pagesVisited >= 10) { state.status = 'not-found'; state.reason = 'Target absent from the observed 100 results or 10 pages'; }
-      else {
-        const correction = correctedQuery(snapshot, state);
-        const next = nextUrl(snapshot.nextUrl, state, correction);
-        if (!next) state = pause(state, snapshot.nextUrl || snapshot.nextKind === 'invalid' ? 'Invalid or repeated next-page URL' : 'Next-page link is unavailable');
-        else { state.status = 'waiting'; state.pendingUrl = next; state.pendingEffectiveQuery = correction; state.nextAt = Date.now() + 2500; state.reason = 'Waiting before the next results page'; }
-      }
+      else return publicState(await followNext(state, snapshot));
     }
     return publicState(await write(state));
   }

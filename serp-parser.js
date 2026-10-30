@@ -8,7 +8,7 @@
   if (notices.length !== 1) return null;
   const message = notices[0].querySelector('.RequestMeta-Message');
   if (!visible(message) || !/^Исправлена опечатка(?:\s|$)/u.test(message.textContent.trim())) return null;
-  const inputs = [...document.querySelectorAll('input.HeaderForm-Input[name="text"][type="text"]')].filter(visible);
+  const inputs = [...document.querySelectorAll('input.HeaderForm-Input[name="text"][type="text"], .HeaderForm-InputContainer textarea.HeaderForm-Input.mini-suggest__input[role="combobox"]')].filter(visible);
   if (inputs.length !== 1) return null;
   const query = inputs[0].value, originalQuery = url.searchParams.get('text');
   if (!query.trim() || query.length > 500 || url.searchParams.getAll('text').length !== 1 || target.searchParams.getAll('text').length !== 1 || query === originalQuery || target.searchParams.get('text') !== query) return null;

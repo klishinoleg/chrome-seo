@@ -73,7 +73,7 @@ const check = (condition, description) => { assert.ok(condition, description); c
   popup.on('pageerror', error => errors.push(error.message));
   await popup.goto(`${base}/popup.html`);
   await popup.locator('#meta h1').waitFor();
-  check(await popup.locator('[data-tab]').count() === 8, 'eight functional inspector tabs including AI and settings');
+  check(await popup.locator('[data-tab]:visible').count() === 8 && await popup.locator('[data-tab="gsc"]').isHidden(), 'ordinary page keeps eight visible tabs and hides Search Console history');
   check((await popup.locator('#meta').textContent()).includes('Кот café A+B'), 'META rendered live fixture data');
   fs.mkdirSync(artifacts, { recursive: true });
   await popup.screenshot({ path: path.join(artifacts, 'meta.png') });
