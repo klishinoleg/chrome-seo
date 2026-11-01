@@ -18,7 +18,7 @@
 | [0.1.10](0.1.10.md) | Действия и удаление отчётов | [9d990c5](https://github.com/klishinoleg/chrome-seo/commit/9d990c5) |
 | [0.1.11](0.1.11.md) | Отметки проверенных сайтов | [3a67bd4](https://github.com/klishinoleg/chrome-seo/commit/3a67bd4) |
 | [0.1.12](0.1.12.md) | Копирование только домена | [6abff4f](https://github.com/klishinoleg/chrome-seo/commit/6abff4f) |
-| [0.1.13](0.1.13.md) | Переходы Яндекса со служебным rnd | — |
-| [0.1.14](0.1.14.md) | Переходы при автоисправлении запроса Яндексом | — |
-| [0.1.15](0.1.15.md) | Дневная история ссылок Search Console и метки NEW | — |
-| [0.1.16](0.1.16.md) | Свежее чтение Search Console после переключения проекта | — |
+| [0.1.13](0.1.13.md) | Переходы Яндекса со служебным rnd | [14cf591](https://github.com/klishinoleg/chrome-seo/commit/14cf591) |
+| [0.1.14](0.1.14.md) | Переходы при автоисправлении запроса Яндексом | [4c40946](https://github.com/klishinoleg/chrome-seo/commit/4c40946) |
+| [0.1.15](0.1.15.md) | Дневная история ссылок Search Console и метки NEW | [2106ec2](https://github.com/klishinoleg/chrome-seo/commit/2106ec2) |
+| [0.1.16](0.1.16.md) | Свежее чтение Search Console после переключения проекта | [1849fda](https://github.com/klishinoleg/chrome-seo/commit/1849fda) |
