@@ -6,6 +6,14 @@
  function node(tag, text) { const result = document.createElement(tag); if (text !== undefined) result.textContent = text; return result; }
  function date(value) { return value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('ru-RU') : '—'; }
  function delta(value) { return Number.isSafeInteger(value) ? `${value > 0 ? '+' : ''}${value}` : '—'; }
+ function folderStatus(sync) {
+  if (!sync?.pending) return sync?.connected && sync?.lastSyncedAt ? 'JSON: синхронизировано' : 'История хранится локально. Папка подключается в LISTS / библиотеке.';
+  if (!sync.connected) return 'История сохранена локально. JSON ожидает синхронизации: откройте библиотеку и подключите папку JSON.';
+  const error = sync.error || '';
+  if (/access|permission|notallowed/i.test(error)) return 'История сохранена локально. Для записи JSON откройте библиотеку → «Разрешить доступ / синхронизировать», подтвердите доступ к прежней папке, затем вернитесь в GSC и нажмите «Синхронизировать JSON».';
+  if (/changed|disconnected|handle.*unavailable/i.test(error)) return 'История сохранена локально. Подключение папки изменилось или недоступно. Проверьте прежнюю папку в библиотеке и повторите синхронизацию JSON в GSC.';
+  return 'История сохранена локально. JSON пока не обновлён. Проверьте файл истории и доступ к папке в библиотеке, затем повторите синхронизацию JSON в GSC.';
+ }
  async function call(action, tab, snapshot) {
   const result = await chrome.runtime.sendMessage({type: 'seoGscHistory', action, tabId: tab.id,
    resourceId: globalThis.SeoGscPage.resource(tab.url), ...(snapshot ? {snapshot} : {})});
@@ -19,7 +27,7 @@
   const coverage = working ? ` · собрано ${working.collected} из ${working.total}${working.complete ? ' · полный день' : ' · сбор не завершён'}` : '';
   $('gsc-last').textContent = summary?.lastCheckedAt ? `Последняя проверка: ${date(summary.lastCheckedAt)}${summary.noChanges && summary.baselineDay ? ' · Без изменений к предыдущему дню' : ''}${coverage}` : 'Сохранённых дней пока нет. Первая страница станет исходной.';
   const sync = state?.sync;
-  $('gsc-sync').textContent = sync?.pending ? `JSON: ожидает синхронизации${sync.error ? ' · ' + sync.error : ''}` : sync?.connected && sync?.lastSyncedAt ? 'JSON: синхронизировано' : 'История хранится локально. Папка подключается в LISTS / библиотеке.';
+  $('gsc-sync').textContent = folderStatus(sync);
   const table = node('table'), head = node('tr');
   for (const label of ['Домен', 'Страниц со ссылками', 'Δ', 'Страниц назначения', 'Δ', 'Впервые сохранён']) head.append(node('th', label));
   const thead = node('thead'); thead.append(head); table.append(thead);
@@ -58,10 +66,13 @@
   busy = true; $('gsc-capture').disabled = true; $('gsc-status').textContent = 'Проверяем открытую страницу таблицы…';
   try {
    const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
-   if (!activeTab || tab?.id !== activeTab.id || tab.url !== activeTab.url || !globalThis.SeoGscPage.resource(tab.url)) throw new Error('Страница изменилась. Обновите окно расширения.');
+   if (!globalThis.SeoGscPage.page(tab?.url) || !globalThis.SeoGscPage.resource(tab.url)) throw new Error('Откройте общий отчёт по доменам Search Console и повторите сохранение.');
+   if (current !== generation) return;
+   activeTab = tab;
+   button.hidden = false;
    await chrome.scripting.executeScript({target: {tabId: tab.id}, files: ['gsc-page.js']});
-   const results = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: () => {
-    try { return {snapshot: globalThis.SeoGscPage.snapshot()}; }
+   const results = await chrome.scripting.executeScript({target: {tabId: tab.id}, args: [tab.url], func: async expectedUrl => {
+    try { return {snapshot: await globalThis.SeoGscPage.freshSnapshot(expectedUrl)}; }
     catch (error) { return {error: error.message}; }
    }});
    const collected = results[0]?.result;
@@ -72,7 +83,7 @@
    const state = await call('capture', actual, collected.snapshot);
    if (current !== generation) return;
    render(state); $('gsc-status').textContent = state.summary?.unchangedCapture ? 'Без изменений · время проверки обновлено.' : 'Страница добавлена в накопленный день по Москве.';
-   await chrome.tabs.sendMessage(tab.id, {type: 'seoGscRefresh'}).catch(() => {});
+   await chrome.scripting.executeScript({target: {tabId: tab.id}, func: () => globalThis.SeoGscPage?.annotate()}).catch(() => {});
   } catch (error) { if (current === generation) $('gsc-status').textContent = error.message; }
   finally { busy = false; $('gsc-capture').disabled = !globalThis.SeoGscPage.resource(activeTab?.url); }
  });
@@ -81,7 +92,11 @@
   const current = ++generation;
   busy = true; $('gsc-sync-now').disabled = true;
   try {
-   const state = await call('sync', activeTab);
+   const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
+   if (!globalThis.SeoGscPage.page(tab?.url) || !globalThis.SeoGscPage.resource(tab.url)) throw new Error('Откройте общий отчёт Search Console и повторите синхронизацию.');
+   if (current !== generation) return;
+   activeTab = tab;
+   const state = await call('sync', tab);
    if (current === generation) {
     render(state);
     $('gsc-status').textContent = state.sync?.pending ? 'Разрешите доступ к папке в библиотеке и повторите синхронизацию.' :

@@ -1,8 +1,51 @@
 'use strict';
 (() => {
- if (globalThis.SeoGscPage) return;
+ const collectorRevision = 2;
+ const previousCollector = globalThis.SeoGscPage;
+ if (previousCollector?.collectorRevision === collectorRevision) return;
  const marker = 'data-seo-gsc-history';
  const help = 'Снимите фильтры и откройте таблицу доменов с известным диапазоном строк. Сохраняйте каждую страницу отдельно; 500 / 1000 / все строки ускорят сбор.';
+ const reportSelector = 'div[jsname="jyrRxf"][jscontroller="uk9a3"]';
+ const columnNames = [['Сайт', 'Site'], ['Страницы со ссылками на ресурс', 'Linking pages'], ['Страницы назначения', 'Target pages']];
+ function problem(message, retryable = false) {
+  const error = new Error(`${message} ${help}`); error.retryable = retryable; return error;
+ }
+ function available(node) {
+  if (!node || node.closest('[hidden], [aria-hidden="true"], [inert]')) return false;
+  for (let current = node; current; current = current.parentElement) {
+   const style = getComputedStyle(current);
+   if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+  }
+  return true;
+ }
+ function rendered(node) {
+  return available(node) && [...node.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+ }
+ function knownColumns(table) {
+  const headers = [...table.querySelectorAll('thead th')];
+  return headers.length === 3 && headers.every((header, index) =>
+   columnNames[index].includes(header.getAttribute('data-name')) && header.getAttribute('data-type') === (index ? 'number' : 'string'));
+ }
+ function dataResource(node) {
+  const raw = node?.getAttribute('data-p');
+  if (typeof raw !== 'string') return null;
+  const match = raw.match(/^%\.@\.\[\s*("(?:[^"\\\u0000-\u001f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*")\s*(?:,|\])/u);
+  if (!match) return null;
+  try { const value = JSON.parse(match[1]); return typeof value === 'string' ? value : null; }
+  catch { return null; }
+ }
+ function activeReport(resourceId) {
+  const candidates = [...document.querySelectorAll('table.i3WFpf')].filter(table => rendered(table) && knownColumns(table))
+   .map(table => ({table, scope: reportScope(table)})).filter(candidate => candidate.scope);
+  if (!candidates.length) throw problem('Таблица отчёта ещё не готова или её структура неизвестна. Дождитесь загрузки и повторите сохранение.', true);
+  const matching = candidates.filter(candidate => {
+   const outer = candidate.scope.report.closest('c-wiz[jscontroller="RFVDtd"]');
+   return dataResource(outer) === resourceId && dataResource(candidate.scope.header.parentElement) === resourceId;
+  });
+  if (matching.length > 1) throw problem('Открыто несколько видимых таблиц отчёта. Дождитесь завершения переключения Search Console.');
+  if (!matching.length) throw problem('Ресурс таблицы ещё не совпадает с открытым проектом. Дождитесь завершения переключения и повторите сохранение.', true);
+  return matching[0];
+ }
  function page(value) {
   try {
    const url = new URL(value);
@@ -31,14 +74,7 @@
       ['hl', 'authuser'].some(key => url.searchParams.getAll(key).length > 1) ||
       (url.searchParams.has('authuser') && !/^\d+$/.test(url.searchParams.get('authuser'))) ||
       (url.searchParams.has('hl') && !/^[a-z]{2,3}(?:-[a-zA-Z]{2,4})?$/.test(url.searchParams.get('hl')))) fail('В отчёте обнаружен фильтр или неизвестный параметр.');
-  const tables = document.querySelectorAll('table.i3WFpf');
-  if (tables.length !== 1) fail('Не удалось однозначно определить таблицу.');
-  const table = tables[0], scope = reportScope(table);
-  if (!scope) fail('Не удалось определить общую область отчёта.');
-  const names = [['Сайт', 'Site'], ['Страницы со ссылками на ресурс', 'Linking pages'], ['Страницы назначения', 'Target pages']];
-  const headers = [...table.querySelectorAll('thead th')];
-  if (headers.length !== 3 || headers.some((header, index) =>
-   !names[index].includes(header.getAttribute('data-name')) || header.getAttribute('data-type') !== (index ? 'number' : 'string'))) fail('Неизвестные колонки таблицы.');
+  const {table, scope} = activeReport(resourceId);
   const filterProof = clearFilters(scope.header);
   if (!filterProof.clear) fail('Состояние фильтров не подтверждено.');
   const seen = new Set();
@@ -71,14 +107,29 @@
   return {url: url.href, resourceId, rows, coverage: {start: values[0], end: values[1], total: values[2], complete}, filters: filterProof};
  }
  function reportScope(table) {
-  const report = table.closest('div[jsname="jyrRxf"][jscontroller="uk9a3"]');
-  if (!report || report.querySelectorAll('table.i3WFpf').length !== 1) return null;
-  const headers = report.querySelectorAll('c-wiz[jsname="kZksbc"] > div.xIJlRd');
-  const holders = report.querySelectorAll('div[jsname="FOLXuf"] > div.CtOYUe');
-  const pagers = report.querySelectorAll('div.VgjuZe > div[jsname="WKVttf"].zKhHyb > div.utnMJd');
+  const report = table.closest(reportSelector);
+  if (!report || !available(report)) return null;
+  const owned = selector => [...report.querySelectorAll(selector)].filter(node => available(node) && node.closest(reportSelector) === report);
+  const headers = owned('c-wiz[jsname="kZksbc"] > div.xIJlRd');
+  const holders = owned('div[jsname="FOLXuf"] > div.CtOYUe');
+  const pagers = owned('div.VgjuZe > div[jsname="WKVttf"].zKhHyb > div.utnMJd');
   if (headers.length !== 1 || holders.length !== 1 || pagers.length !== 1 ||
       !holders[0].contains(table)) return null;
-  return {header: headers[0], pager: pagers[0]};
+  return {report, header: headers[0], pager: pagers[0]};
+ }
+ async function freshSnapshot(expectedUrl = location.href) {
+  const deadline = Date.now() + 2400;
+  while (true) {
+   if (location.href !== expectedUrl) throw problem('Страница изменилась во время чтения. Повторите сохранение.');
+   try {
+    const result = snapshot();
+    if (location.href !== expectedUrl) throw problem('Страница изменилась во время чтения. Повторите сохранение.');
+    return result;
+   } catch (error) {
+    if (!error.retryable || Date.now() >= deadline) throw error;
+    await new Promise(resolve => setTimeout(resolve, Math.min(100, deadline - Date.now())));
+   }
+  }
  }
  function clearFilters(header) {
   // An explicit known toolbar is required; absence of filter chips alone is not proof.
@@ -108,12 +159,12 @@
    if (current !== generation || location.href !== href || !result?.ok) return;
    const state = result.result;
    if (state?.resourceId !== id || !Array.isArray(state.summary?.domains)) return;
-   const tables = document.querySelectorAll('table.i3WFpf');
-   if (tables.length !== 1) return;
+   snapshot();
+   const {table} = activeReport(id);
    const entries = new Map(state.summary.domains.map(item => [item.domain, item]));
    const hasBaseline = (state.summary.measurementCount || 0) > 0;
    applying = true;
-   for (const cell of tables[0].querySelectorAll('tbody tr td:first-child[data-string-value]')) {
+   for (const cell of table.querySelectorAll('tbody tr td:first-child[data-string-value]')) {
     const item = entries.get(cell.getAttribute('data-string-value').toLowerCase());
     if (!item && !hasBaseline) continue;
     const note = document.createElement('span'); note.setAttribute(marker, '');
@@ -141,7 +192,9 @@
   finally { applying = false; }
  }
  function key() {
-  return location.href + '\n' + [...document.querySelectorAll('table.i3WFpf td')].map(cell => {
+  const visibility = [...document.querySelectorAll('table.i3WFpf')].map(table => rendered(table) ? 'visible' : 'hidden').join('|');
+  const properties = [...document.querySelectorAll('c-wiz[jscontroller="RFVDtd"], c-wiz[jsname="kZksbc"]')].map(dataResource).join('|');
+  return location.href + '\n' + visibility + '\n' + properties + '\n' + [...document.querySelectorAll('table.i3WFpf td')].map(cell => {
    if (!cellIds.has(cell)) cellIds.set(cell, ++cellSequence);
    return `${cellIds.get(cell)}:${cell.getAttribute('data-string-value') || cell.getAttribute('data-numeric-value') || ''}`;
   }).join('|');
@@ -152,10 +205,10 @@
   if (next === lastKey) return;
   lastKey = next; clearTimeout(timer); timer = setTimeout(annotate, 150);
  }
- globalThis.SeoGscPage = {page, resource, snapshot, annotate, elapsed};
+ globalThis.SeoGscPage = {collectorRevision, page, resource, snapshot, freshSnapshot, annotate, elapsed};
  globalThis.globalSeoGscPage = globalThis.SeoGscPage;
- if (globalThis.chrome?.runtime?.id && globalThis.MutationObserver && document.documentElement) {
-  new MutationObserver(schedule).observe(document.documentElement, {subtree: true, childList: true, attributes: true, attributeFilter: ['data-string-value', 'data-numeric-value']});
+ if (!previousCollector && globalThis.chrome?.runtime?.id && globalThis.MutationObserver && document.documentElement) {
+  new MutationObserver(schedule).observe(document.documentElement, {subtree: true, childList: true, attributes: true, attributeFilter: ['data-string-value', 'data-numeric-value', 'hidden', 'aria-hidden', 'inert', 'style', 'class', 'data-p']});
   setInterval(schedule, 1000);
   chrome.runtime.onMessage.addListener(message => { if (message.type === 'seoGscRefresh') void annotate(); });
   schedule();

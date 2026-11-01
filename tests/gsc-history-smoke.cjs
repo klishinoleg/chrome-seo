@@ -16,9 +16,9 @@ const server = http.createServer((req, res) => {
 let rows = [{ domain: 'alpha.example', links: 100, targetPages: 3 }, { domain: 'beta.example', links: 20, targetPages: 1 }];
 let filtered = false, total = null, rangeStart = 1;
 const escape = value => String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-function fixture() {
+function fixture(resourceId = 'https://first.example/') {
   const count = total ?? rows.length;
-  return `<!doctype html><html lang="ru"><head><title>Links report fixture</title></head><body><main><h1>Сайты, ссылающиеся чаще всего</h1><div jsname="jyrRxf" jscontroller="uk9a3"><c-wiz jsname="kZksbc"><div class="xIJlRd"><div class="c1UqTd"><div class="kHsG"><div class="Y9Rb7"><div jsname="BbxQOb" class="Qi0ZXd" style="display:${filtered ? 'block' : 'none'}">${filtered ? '<span>Сайт содержит alpha</span>' : ''}</div><div role="button" jsname="mghfO" aria-label="Фильтрация по строкам таблицы" aria-expanded="false">Фильтр</div></div></div></div></div></c-wiz><div jsname="FOLXuf"><div class="CtOYUe"><table class="i3WFpf"><thead><tr><th data-type="string" data-name="Сайт">Сайт</th><th data-type="number" data-name="Страницы со ссылками на ресурс">Страницы со ссылками на ресурс</th><th data-type="number" data-name="Страницы назначения">Страницы назначения</th></tr></thead><tbody>${rows.map(row => `<tr><td data-string-value="${escape(row.domain)}"><span>${escape(row.domain)}</span><span data-value="${escape(row.domain)}" data-column-type="12">↗</span></td><td data-numeric-value="${row.links}">${row.links}</td><td data-numeric-value="${row.targetPages}">${row.targetPages}</td></tr>`).join('')}</tbody></table></div></div><div class="VgjuZe"><div jsname="WKVttf" class="zKhHyb"><div class="utnMJd"><span class="UwdJ1c">${rows.length ? `${rangeStart}–${rangeStart+rows.length-1}` : '0–0'} из ${count}</span><span data-paginate="previous" aria-disabled="${rangeStart === 1}"></span><span data-paginate="next" aria-disabled="${count === rangeStart+rows.length-1 || !count}"></span></div></div></div></div></main></body></html>`;
+  return `<!doctype html><html lang="ru"><head><title>Links report fixture</title></head><body><main><h1>Сайты, ссылающиеся чаще всего</h1><c-wiz jscontroller="RFVDtd" data-p="${escape('%.@.['+JSON.stringify(resourceId)+',42]')}"><div jsname="jyrRxf" jscontroller="uk9a3"><c-wiz jsname="kZksbc" data-p="${escape('%.@.['+JSON.stringify(resourceId)+',42]')}"><div class="xIJlRd"><div class="c1UqTd"><div class="kHsG"><div class="Y9Rb7"><div jsname="BbxQOb" class="Qi0ZXd" style="display:${filtered ? 'block' : 'none'}">${filtered ? '<span>Сайт содержит alpha</span>' : ''}</div><div role="button" jsname="mghfO" aria-label="Фильтрация по строкам таблицы" aria-expanded="false">Фильтр</div></div></div></div></div></c-wiz><div jsname="FOLXuf"><div class="CtOYUe"><table class="i3WFpf"><thead><tr><th data-type="string" data-name="Сайт">Сайт</th><th data-type="number" data-name="Страницы со ссылками на ресурс">Страницы со ссылками на ресурс</th><th data-type="number" data-name="Страницы назначения">Страницы назначения</th></tr></thead><tbody>${rows.map(row => `<tr><td data-string-value="${escape(row.domain)}"><span>${escape(row.domain)}</span><span data-value="${escape(row.domain)}" data-column-type="12">↗</span></td><td data-numeric-value="${row.links}">${row.links}</td><td data-numeric-value="${row.targetPages}">${row.targetPages}</td></tr>`).join('')}</tbody></table></div></div><div class="VgjuZe"><div jsname="WKVttf" class="zKhHyb"><div class="utnMJd"><span class="UwdJ1c">${rows.length ? `${rangeStart}–${rangeStart+rows.length-1}` : '0–0'} из ${count}</span><span data-paginate="previous" aria-disabled="${rangeStart === 1}"></span><span data-paginate="next" aria-disabled="${count === rangeStart+rows.length-1 || !count}"></span></div></div></div></div></c-wiz></main></body></html>`;
 }
 (async () => {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -27,7 +27,7 @@ function fixture() {
   const cdp = await browser.browser().newBrowserCDPSession();
   const { id } = await cdp.send('Extensions.loadUnpacked', { path: root });
   await browser.route(/^https?:\/\//, route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());
-  await browser.route('https://search.google.com/**', route => route.fulfill({ contentType: 'text/html; charset=utf-8', body: fixture() }));
+  await browser.route('https://search.google.com/**', route => route.fulfill({ contentType: 'text/html; charset=utf-8', body: fixture(new URL(route.request().url()).searchParams.get('resource_id') || 'https://first.example/') }));
   const admin = await browser.newPage(); await admin.goto(`chrome-extension://${id}/library.html`);
   const source = await browser.newPage(), errors = [];
   source.on('pageerror', error => { errors.push(error.stack); console.error('GSC PAGE ERROR', error.stack); });
@@ -138,6 +138,7 @@ function fixture() {
   await popup.exposeFunction('__gscSnapshot',async()=>{try{return{snapshot:await snapshot()};}catch(error){return{error:error.message};}});
   await popup.exposeFunction('__gscAnalyze',()=>admin.evaluate(async tabId=>(await chrome.scripting.executeScript({target:{tabId},func:()=>globalThis.__chromeSeo.analyze()}))[0].result,tabId));
   await popup.exposeFunction('__gscNotify',()=>admin.evaluate(tabId=>chrome.tabs.sendMessage(tabId,{type:'seoGscRefresh'}),tabId));
+  await popup.exposeFunction('__gscAnnotate',()=>admin.evaluate(async tabId=>(await chrome.scripting.executeScript({target:{tabId},func:()=>globalThis.SeoGscPage.annotate()}))[0].result,tabId));
   await popup.addInitScript(({id,manifest})=>{
     window.chrome={
       tabs:{query:async()=>[await __gscActive()],create:async()=>({id:999}),sendMessage:async()=>__gscNotify(),onActivated:{addListener(){}},onUpdated:{addListener(){}}},
@@ -145,7 +146,8 @@ function fixture() {
       runtime:{getURL:file=>`chrome-extension://${id}/${file}`,getManifest:()=>manifest,sendMessage:message=>__gscMessage(message)},
       scripting:{executeScript:async options=>{
         if(options.files)return __gscInject(options.files);
-        if(options.func?.toString().includes('SeoGscPage.snapshot'))return[{result:await __gscSnapshot()}];
+        if(/SeoGscPage\.(?:snapshot|freshSnapshot)/.test(options.func?.toString() || ''))return[{result:await __gscSnapshot()}];
+        if(options.func?.toString().includes('SeoGscPage?.annotate'))return[{result:await __gscAnnotate()}];
         if(options.args?.[0]==='analyze')return[{result:await __gscAnalyze()}];
         return[{result:null}];
       }}
@@ -159,6 +161,11 @@ function fixture() {
   check((await popup.locator('#gsc-results').textContent()).includes('NEW'),'popup displays saved daily NEW status without clearing it on repeat');
   activeDelay=200;await popup.reload();await popup.locator('[data-tab="gsc"]').waitFor({state:'visible'});await popup.waitForTimeout(300);
   check(await popup.locator('.panel.active').getAttribute('id')==='gsc','saved GSC tab restores even when active-tab lookup resolves after storage preference');activeDelay=0;
+  await nativeWorker.evaluate(()=>{globalThis.__gscPermissionOriginal=FileSystemDirectoryHandle.prototype.queryPermission;FileSystemDirectoryHandle.prototype.queryPermission=async()=> 'denied';});
+  await popup.locator('#gsc-sync-now').click();await popup.waitForFunction(()=>!document.querySelector('#gsc-sync-now').disabled);
+  const permissionText=(await popup.locator('#gsc-sync').textContent())+' '+(await popup.locator('#gsc-status').textContent());
+  check(/библиотек|Разрешить доступ/i.test(permissionText) && !permissionText.includes('Folder access'),'folder permission failure shows actionable Russian guidance instead of a raw English error');
+  await nativeWorker.evaluate(()=>{FileSystemDirectoryHandle.prototype.queryPermission=globalThis.__gscPermissionOriginal;delete globalThis.__gscPermissionOriginal;});await rpc('sync');await popup.evaluate(()=>SeoGscPopup.refresh());
   const screenshot='C:/Users/klish/.codex/visualizations/2026/10/22/01a1638b-a337-75d1-b3e3-680cfe652ad8/chrome-seo-gsc-popup.png';
   await popup.screenshot({path:screenshot});
   await source.reload();await source.waitForSelector('[data-seo-gsc-history]');
